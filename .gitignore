@@ -1,0 +1,13 @@
+build/
+build_device/
+build*/
+*.o
+*.obj
+*.elf
+*.uf2
+*.dis
+*.bin
+*.hex
+*.map
+.cache/
+compile_commands.json
