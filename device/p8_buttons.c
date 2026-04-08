@@ -52,8 +52,31 @@ void p8_buttons_init(void) {
     init_pull_up(BTN_MENU_GP);
 }
 
-uint8_t p8_buttons_read(void) {
-    /* gpio_get returns 1 when the line is high; pressed = low. */
+/* Diagonal-assist input coalescing.
+ *
+ * The Thumby Color d-pad is a single rocker over a pivot — pressing
+ * LEFT+UP simultaneously requires landing on an exact corner that
+ * the physical geometry actively resists. Real PICO-8 carts (Celeste
+ * especially) assume the player can hit diagonals trivially, so we
+ * "smear" direction-bit history forward by P8_DIAG_FRAMES frames.
+ *
+ * Effect: a rapid LEFT-then-UP within (P8_DIAG_FRAMES / fps) seconds
+ * is reported to the cart as both held simultaneously, which is
+ * what the player meant. Action buttons (O/X) are never coalesced
+ * — that would feel sticky on rapid jump presses.
+ *
+ * P8_DIAG_FRAMES = 3 → ~100 ms at 30 fps, ~50 ms at 60 fps. Small
+ * enough that intentionally separate L then U presses still feel
+ * separate. Bumpable at compile time if you want more lenience.
+ */
+#ifndef P8_DIAG_FRAMES
+#define P8_DIAG_FRAMES 5
+#endif
+
+static uint8_t dir_history[P8_DIAG_FRAMES];
+static int     dir_hist_idx = 0;
+
+static uint8_t read_raw(void) {
     uint8_t b = 0;
     if (!gpio_get(BTN_LEFT_GP))  b |= 1 << 0;
     if (!gpio_get(BTN_RIGHT_GP)) b |= 1 << 1;
@@ -62,6 +85,21 @@ uint8_t p8_buttons_read(void) {
     if (!gpio_get(BTN_B_GP) || !gpio_get(BTN_LB_GP))  b |= 1 << 4;  /* O */
     if (!gpio_get(BTN_A_GP) || !gpio_get(BTN_RB_GP))  b |= 1 << 5;  /* X */
     return b;
+}
+
+uint8_t p8_buttons_read(void) {
+    uint8_t cur = read_raw();
+
+    /* Push current direction bits into history ring */
+    dir_history[dir_hist_idx] = cur & 0x0f;
+    dir_hist_idx = (dir_hist_idx + 1) % P8_DIAG_FRAMES;
+
+    /* OR direction bits across the window */
+    uint8_t dirs = 0;
+    for (int i = 0; i < P8_DIAG_FRAMES; i++) dirs |= dir_history[i];
+
+    /* Action bits straight from current frame, no smearing. */
+    return dirs | (cur & 0x30);
 }
 
 int p8_buttons_menu_pressed(void) {
