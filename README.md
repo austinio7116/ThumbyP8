@@ -24,7 +24,7 @@ by Lexaloffle.
 | 128×128 RGB565 framebuffer + 4bpp PICO-8 model | ✅ |
 | Drawing primitives (`cls` `pset` `line` `rect` `circ` `spr` `sspr` `map` `print` …) | ✅ |
 | Sprites, tilemap, sprite flags | ✅ |
-| Built-in 3×5 font transcribed from Pemsa (MIT) | ✅ |
+| PICO-8 font shape (3×5 glyphs) — transcribed from Pemsa, MIT | ✅ |
 | Input (`btn`/`btnp`) with diagonal coalescing + trigger chord shortcuts | ✅ |
 | 4-channel audio synth (8 waveforms, slide / vibrato / drop / fades) | ✅ |
 | Hardware audio: 9-bit PWM + sample-rate IRQ | ✅ |
@@ -375,8 +375,9 @@ as `0` instead of erroring (matches what real carts assume).
 - **Lua heap cap is 192 KB.** Carts that pre-allocate more than
   this in `_init` won't run. Lootslime is the canary — it allocates
   ~250 KB of game state in init.
-- **`print()` uses a 3×5 placeholder font**, not the actual PICO-8
-  font. Visually distinguishable but legible.
+- **`print()` uses the PICO-8 font shape** transcribed from Pemsa
+  (MIT, egordorichev). 3-wide × 5-tall glyphs, ASCII 32–127. Real
+  PICO-8 font shape, not a placeholder.
 - **`sin`/`cos` go through libm `sinf`/`cosf`** which on
   newlib-nano internally promote to double precision and are slow
   (~3 µs/call on M33). A LUT-based version is on the Phase 7 todo.
