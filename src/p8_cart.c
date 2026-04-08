@@ -95,70 +95,88 @@ static int section_from_marker(const char *s) {
     return -1;
 }
 
-int p8_cart_load(p8_cart *cart, p8_machine *m, const char *path) {
+/* --- in-memory loader -------------------------------------------------
+ * Walks the cart text directly out of `src`, no FILE* required.
+ * Same parsing logic as the original line-oriented loader, just
+ * driven by manual line slicing so it works on bare-metal.
+ */
+int p8_cart_load_from_memory(p8_cart *cart, p8_machine *m,
+                              const char *src, size_t src_len) {
     cart->lua_source = NULL;
     cart->lua_size = 0;
 
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "[ThumbyP8] cart: cannot open '%s'\n", path);
-        return -1;
-    }
-
-    /* Two passes is wasteful; instead, accumulate Lua source into a
-     * growing buffer and decode binary sections inline. */
     size_t lua_cap = 4096;
     size_t lua_len = 0;
     char *lua_buf = (char *)malloc(lua_cap);
-    if (!lua_buf) { fclose(f); return -1; }
+    if (!lua_buf) return -1;
     lua_buf[0] = 0;
 
-    char line[1024];
     int section = SEC_NONE;
     int gfx_row = 0, gff_row = 0, map_row = 0;
 
-    while (fgets(line, sizeof(line), f)) {
-        /* Detect section markers (must be the whole line). */
-        char trimmed[64];
-        size_t tlen = 0;
-        for (size_t i = 0; line[i] && line[i] != '\n' && line[i] != '\r' && tlen < sizeof(trimmed)-1; i++) {
-            trimmed[tlen++] = line[i];
-        }
-        trimmed[tlen] = 0;
+    /* Reusable scratch line buffer for binary-section decoders that
+     * want a NUL-terminated string. */
+    char line[1024];
 
-        if (tlen >= 5 && trimmed[0] == '_' && trimmed[1] == '_') {
-            int s = section_from_marker(trimmed);
+    size_t i = 0;
+    while (i < src_len) {
+        size_t j = i;
+        while (j < src_len && src[j] != '\n') j++;
+        size_t ll = j - i;     /* length without newline */
+        const char *lp = src + i;
+
+        /* Section marker detection (must be the whole line). */
+        if (ll >= 5 && lp[0] == '_' && lp[1] == '_') {
+            char marker[64];
+            size_t mlen = ll;
+            if (mlen > sizeof(marker) - 1) mlen = sizeof(marker) - 1;
+            /* strip trailing \r if present */
+            while (mlen > 0 && lp[mlen-1] == '\r') mlen--;
+            memcpy(marker, lp, mlen);
+            marker[mlen] = 0;
+            int s = section_from_marker(marker);
             if (s >= 0) {
                 section = s;
                 gfx_row = gff_row = map_row = 0;
+                i = j + 1;
                 continue;
             }
         }
 
         switch (section) {
         case SEC_LUA: {
-            size_t add = strlen(line);
+            /* Lua section: append the line including its trailing \n. */
+            size_t add = ll + 1;  /* +1 for the newline we'll re-add */
             if (lua_len + add + 1 > lua_cap) {
                 while (lua_len + add + 1 > lua_cap) lua_cap *= 2;
                 char *nb = (char *)realloc(lua_buf, lua_cap);
-                if (!nb) { free(lua_buf); fclose(f); return -1; }
+                if (!nb) { free(lua_buf); return -1; }
                 lua_buf = nb;
             }
-            memcpy(lua_buf + lua_len, line, add);
-            lua_len += add;
+            memcpy(lua_buf + lua_len, lp, ll);
+            lua_len += ll;
+            lua_buf[lua_len++] = '\n';
             lua_buf[lua_len] = 0;
             break;
         }
-        case SEC_GFX: rstrip(line); decode_gfx_line(m, gfx_row++, line); break;
-        case SEC_GFF: rstrip(line); decode_gff_line(m, gff_row++, line); break;
-        case SEC_MAP: rstrip(line); decode_map_line(m, map_row++, line); break;
-        case SEC_OTHER:
-        case SEC_NONE:
-        default:
+        case SEC_GFX:
+        case SEC_GFF:
+        case SEC_MAP: {
+            size_t cl = ll;
+            if (cl > sizeof(line) - 1) cl = sizeof(line) - 1;
+            memcpy(line, lp, cl);
+            line[cl] = 0;
+            /* Strip trailing \r */
+            while (cl > 0 && line[cl-1] == '\r') line[--cl] = 0;
+            if (section == SEC_GFX) decode_gfx_line(m, gfx_row++, line);
+            else if (section == SEC_GFF) decode_gff_line(m, gff_row++, line);
+            else                          decode_map_line(m, map_row++, line);
             break;
         }
+        default: break;
+        }
+        i = j + 1;
     }
-    fclose(f);
 
     /* Rewrite PICO-8 dialect → vanilla Lua 5.4. */
     size_t rewritten_len = 0;
@@ -173,6 +191,30 @@ int p8_cart_load(p8_cart *cart, p8_machine *m, const char *path) {
     }
     return 0;
 }
+
+#ifndef PICO_ON_DEVICE
+/* Host file loader: slurps the file into memory then delegates. */
+int p8_cart_load(p8_cart *cart, p8_machine *m, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[ThumbyP8] cart: cannot open '%s'\n", path);
+        return -1;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return -1; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)sz);
+    if (!buf) { fclose(f); return -1; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf); fclose(f); return -1;
+    }
+    fclose(f);
+    int rc = p8_cart_load_from_memory(cart, m, buf, (size_t)sz);
+    free(buf);
+    return rc;
+}
+#endif
 
 void p8_cart_free(p8_cart *cart) {
     if (cart->lua_source) {

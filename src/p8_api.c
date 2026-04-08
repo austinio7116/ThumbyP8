@@ -476,33 +476,50 @@ static int l_p8_dset(lua_State *L)     { (void)L; return 0; }
 /* --- table helpers (add/del/foreach/count + all iterator) ----------- */
 /* PICO-8 ships these as built-in globals on top of the Lua tables. */
 
-/* all(t) returns an iterator over t[1..#t]. PICO-8 iterator is
- * "safe" against del() during iteration, but we're pragmatic: a
- * simple index-based iterator is enough for Celeste Classic and most
- * carts (they del() on separate lists). */
+/* all(t): same del-during-iteration safety as foreach above. We
+ * stash the last value we returned in upvalue 3 so the next call
+ * can detect whether the slot was shifted (deleted) and re-read
+ * the same index. */
 static int all_iter(lua_State *L) {
-    /* upvalues: table, index */
-    int idx = (int)lua_tointeger(L, lua_upvalueindex(2)) + 1;
-    lua_geti(L, lua_upvalueindex(1), idx);
-    if (lua_isnil(L, -1)) return 1;  /* nil terminates */
-    /* store updated index */
-    lua_pushinteger(L, idx);
-    lua_replace(L, lua_upvalueindex(2));
-    return 1;
+    /* upvalues: 1=table, 2=last_index, 3=last_value */
+    lua_Integer i = (lua_Integer)lua_tointeger(L, lua_upvalueindex(2));
+    if (i > 0) {
+        lua_geti(L, lua_upvalueindex(1), i);
+        int eq = lua_rawequal(L, -1, lua_upvalueindex(3));
+        lua_pop(L, 1);
+        if (eq) i++;        /* normal advance */
+        /* else: slot was emptied — re-process slot i */
+    } else {
+        i = 1;
+    }
+    lua_Integer len = luaL_len(L, lua_upvalueindex(1));
+    while (i <= len) {
+        lua_geti(L, lua_upvalueindex(1), i);
+        if (!lua_isnil(L, -1)) {
+            /* Update upvalues for next call */
+            lua_pushinteger(L, i);
+            lua_replace(L, lua_upvalueindex(2));
+            lua_pushvalue(L, -1);
+            lua_replace(L, lua_upvalueindex(3));
+            return 1;
+        }
+        lua_pop(L, 1);
+        i++;
+    }
+    return 0;  /* exhausted */
 }
 static int l_p8_all(lua_State *L) {
-    if (lua_isnoneornil(L, 1)) {
-        /* empty iterator */
-        lua_pushcfunction(L, all_iter);
+    if (lua_isnoneornil(L, 1) || !lua_istable(L, 1)) {
         lua_newtable(L);
         lua_pushinteger(L, 0);
-        lua_pushcclosure(L, all_iter, 2);
+        lua_pushnil(L);
+        lua_pushcclosure(L, all_iter, 3);
         return 1;
     }
-    luaL_checktype(L, 1, LUA_TTABLE);
     lua_pushvalue(L, 1);
     lua_pushinteger(L, 0);
-    lua_pushcclosure(L, all_iter, 2);
+    lua_pushnil(L);
+    lua_pushcclosure(L, all_iter, 3);
     return 1;
 }
 
@@ -542,16 +559,37 @@ static int l_count(lua_State *L) {
     lua_pushinteger(L, luaL_len(L, 1));
     return 1;
 }
+/* foreach must survive del()-during-iteration. PICO-8 carts (Celeste
+ * Classic in particular) routinely call `del(t, o)` from inside the
+ * callback, which shifts later items down by one slot. We detect a
+ * shift by stashing the value we just dispatched and re-reading t[i]
+ * after the callback: if it changed, the slot was emptied → don't
+ * advance i, so next iteration picks up the new occupant of slot i.
+ * Also re-evaluates #t each step so add() during iter is honored. */
 static int l_foreach(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     luaL_checktype(L, 2, LUA_TFUNCTION);
-    lua_Integer len = luaL_len(L, 1);
-    for (lua_Integer i = 1; i <= len; i++) {
-        lua_pushvalue(L, 2);
-        lua_geti(L, 1, i);
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            return lua_error(L);
+    lua_Integer i = 1;
+    for (;;) {
+        lua_Integer len = luaL_len(L, 1);
+        if (i > len) break;
+        lua_geti(L, 1, i);              /* stack: value */
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            i++;
+            continue;
         }
+        /* Call fn(value), keeping a duplicate for shift detection. */
+        lua_pushvalue(L, -1);            /* stack: value, value */
+        lua_pushvalue(L, 2);             /* stack: value, value, fn */
+        lua_insert(L, -2);               /* stack: value, fn, value */
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) return lua_error(L);
+        /* stack: value (saved) */
+        lua_geti(L, 1, i);               /* stack: value, cur */
+        int eq = lua_rawequal(L, -1, -2);
+        lua_pop(L, 2);
+        if (eq) i++;
+        /* else: leave i — next iter re-reads the shifted-in slot. */
     }
     return 0;
 }

@@ -25,11 +25,18 @@ typedef struct p8_cart {
     size_t lua_size;
 } p8_cart;
 
-/* Load a .p8 file from disk. Decodes binary sections directly into
- * `m->mem`. Returns 0 on success, nonzero on error (message printed
- * to stderr). The cart's Lua source is owned by `cart` and must be
- * freed with p8_cart_free(). */
+/* Load a .p8 cart from a raw byte buffer. Decodes binary sections
+ * directly into `m->mem`. The src buffer is not retained — the cart's
+ * Lua source is malloc'd and copied. Free with p8_cart_free(). */
+int  p8_cart_load_from_memory(p8_cart *cart, p8_machine *m,
+                              const char *src, size_t src_len);
+
+/* Host convenience: load from a filesystem path. Not available on
+ * bare-metal device builds (no fopen). */
+#ifndef PICO_ON_DEVICE
 int  p8_cart_load(p8_cart *cart, p8_machine *m, const char *path);
+#endif
+
 void p8_cart_free(p8_cart *cart);
 
 #endif
