@@ -94,3 +94,43 @@ pico_enable_stdio_usb(p8bench_device 1)
 pico_enable_stdio_uart(p8bench_device 0)
 
 pico_add_extra_outputs(p8bench_device)
+
+# ----------------------------------------------------------------------
+# ThumbyP8 runtime: shared static library for the device
+# ----------------------------------------------------------------------
+# Same source list as the host build's `thumbyp8` target, but compiled
+# with PICO_ON_DEVICE so the file IO path in p8_cart.c is excluded.
+add_library(thumbyp8_runtime STATIC
+    ${P8_ROOT}/src/p8.c
+    ${P8_ROOT}/src/p8_machine.c
+    ${P8_ROOT}/src/p8_draw.c
+    ${P8_ROOT}/src/p8_api.c
+    ${P8_ROOT}/src/p8_cart.c
+    ${P8_ROOT}/src/p8_rewrite.c
+    ${P8_ROOT}/src/p8_font.c
+)
+target_include_directories(thumbyp8_runtime PUBLIC ${P8_ROOT}/src)
+target_compile_options(thumbyp8_runtime PRIVATE -O3)
+target_link_libraries(thumbyp8_runtime PUBLIC thumbyp8_lua pico_stdlib)
+
+# ----------------------------------------------------------------------
+# p8run_device: full PICO-8 runtime targeting the LCD + buttons
+# ----------------------------------------------------------------------
+add_executable(p8run_device
+    p8_device_main.c
+    p8_lcd_gc9107.c
+    p8_buttons.c
+)
+target_include_directories(p8run_device PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_compile_options(p8run_device PRIVATE -O3)
+target_link_libraries(p8run_device PRIVATE
+    thumbyp8_runtime
+    pico_stdlib
+    hardware_clocks
+    hardware_spi
+    hardware_dma
+    hardware_gpio
+)
+pico_enable_stdio_usb(p8run_device 1)
+pico_enable_stdio_uart(p8run_device 0)
+pico_add_extra_outputs(p8run_device)
