@@ -46,6 +46,7 @@ add_library(thumbyp8 STATIC
     src/p8_rewrite.c
     src/p8_font.c
     src/p8_audio.c
+    src/p8_p8png.c
 )
 target_include_directories(thumbyp8 PUBLIC src)
 target_link_libraries(thumbyp8 PUBLIC thumbyp8_lua)

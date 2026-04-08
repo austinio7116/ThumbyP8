@@ -8,6 +8,7 @@
  */
 #include "p8_cart.h"
 #include "p8_rewrite.h"
+#include "p8_p8png.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -182,6 +183,30 @@ int p8_cart_load_from_memory(p8_cart *cart, p8_machine *m,
                               const char *src, size_t src_len) {
     cart->lua_source = NULL;
     cart->lua_size = 0;
+
+    /* PNG cart? Hand off to the .p8.png loader, which decodes the
+     * steganographic cart bytes, copies ROM into machine memory, and
+     * returns the decompressed Lua source. */
+    if (p8_p8png_is_png((const unsigned char *)src, src_len)) {
+        char *lua = NULL;
+        size_t lua_len = 0;
+        if (p8_p8png_load(m, (const unsigned char *)src, src_len,
+                          &lua, &lua_len) != 0) {
+            return -1;
+        }
+        /* Lua dialect rewrite, same as text path. */
+        size_t rewritten_len = 0;
+        char *rewritten = p8_rewrite_lua(lua, lua_len, &rewritten_len);
+        if (rewritten) {
+            free(lua);
+            cart->lua_source = rewritten;
+            cart->lua_size = rewritten_len;
+        } else {
+            cart->lua_source = lua;
+            cart->lua_size = lua_len;
+        }
+        return 0;
+    }
 
     size_t lua_cap = 4096;
     size_t lua_len = 0;

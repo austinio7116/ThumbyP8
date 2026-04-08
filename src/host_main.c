@@ -106,6 +106,10 @@ int main(int argc, char **argv) {
     }
 
     if (cart.lua_source && cart.lua_size > 0) {
+        if (getenv("P8_DUMP_LUA")) {
+            FILE *df = fopen(getenv("P8_DUMP_LUA"), "w");
+            if (df) { fwrite(cart.lua_source, 1, cart.lua_size, df); fclose(df); }
+        }
         if (p8_vm_do_string(&vm, cart.lua_source, "=cart") != LUA_OK) {
             fprintf(stderr, "cart load error: %s\n",
                     p8_vm_last_error_msg(&vm));

@@ -23,6 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ---------- forward decls -------------------------------------------- */
+static char *pre_pass_separate_numbers(const char *src, size_t len, size_t *out_len);
+
 /* ---------- growable output buffer ----------------------------------- */
 typedef struct buf {
     char  *data;
@@ -187,8 +190,10 @@ static int is_stmt_terminator_keyword(const char *s, size_t len) {
  * line. Tracks paren/bracket depth and string state; stops at:
  *   - end of line
  *   - `;` at depth 0
- *   - a statement-keyword at depth 0 (e.g. `return`, `end`)
- *   - start of a line comment */
+ *   - a statement-keyword at depth 0 (with OR without whitespace,
+ *     e.g. `j-=1return` minified → stops at `return`)
+ *   - start of a line comment
+ *   - an unmatched closing paren/bracket/brace */
 static int find_expr_end(const char *line, size_t n, int rhs_start) {
     int depth = 0;
     int s = S_CODE;
@@ -201,13 +206,37 @@ static int find_expr_end(const char *line, size_t n, int rhs_start) {
             if (c == '-' && i + 1 < (int)n && line[i+1] == '-') return i;
             if (c == '(' || c == '[' || c == '{') { depth++; i++; continue; }
             if (c == ')' || c == ']' || c == '}') {
-                if (depth == 0) return i;  /* unmatched close — outer block ends */
+                if (depth == 0) return i;  /* outer block ends */
                 depth--; i++; continue;
             }
             if (depth == 0 && c == ';') return i;
+
+            /* Statement-keyword check at depth 0. Triggers on every
+             * alphabetic position whose word is a known stmt keyword,
+             * regardless of whether the previous character is whitespace.
+             * This catches PICO-8 minified code like `j-=1return` where
+             * the `return` immediately follows the digit. False positives
+             * with hex literals (`0xface` etc.) are guarded against
+             * because none of our stmt-keywords are pure hex digit runs. */
+            if (depth == 0 && (isalpha((unsigned char)c) || c == '_')) {
+                int j = i;
+                while (j < (int)n && is_ident_char((unsigned char)line[j])) j++;
+                int wlen = j - i;
+                if (wlen > 0 &&
+                    is_stmt_terminator_keyword(line + i, (size_t)wlen)) {
+                    /* Don't false-fire mid-identifier when prev char is
+                     * also an identifier char (e.g. `foo_end` shouldn't
+                     * stop at `end`). The mid-token case for
+                     * `1return` is the one we want — digit→letter is
+                     * a token boundary in Lua, not a mid-identifier. */
+                    int prev_is_letter = (i > 0) &&
+                        (isalpha((unsigned char)line[i-1]) || line[i-1] == '_');
+                    if (!prev_is_letter) return i;
+                }
+            }
+
             if (depth == 0 && (c == ' ' || c == '\t')) {
-                /* Peek at next non-whitespace word; if it's a
-                 * statement-terminator keyword, stop here. */
+                /* Whitespace-then-keyword case (preserved as fallback). */
                 int j = i;
                 while (j < (int)n && (line[j] == ' ' || line[j] == '\t')) j++;
                 int wstart = j;
@@ -387,7 +416,154 @@ static void apply_shorthand_if(buf *out, const char *line, size_t n) {
  * honor `[===[` bracket levels — PICO-8 carts almost never use long
  * strings at all. If you need them, extend here. */
 
-char *p8_rewrite_lua(const char *src, size_t len, size_t *out_len) {
+/* Pre-pass: shrinko8/picotool minified PICO-8 source omits whitespace
+ * between adjacent tokens that real Lua's lexer requires. The most
+ * common breakage is `<number><identifier>` → e.g. `j-=1return`,
+ * `P=0nC()`, `n9=i*128n7=...`. Walk the source in code state and
+ * insert a single space between the end of any number literal and
+ * a following letter/underscore.
+ *
+ * Numbers handled:
+ *   - decimal:   1, 1.5, .5, 1e2, 1e+2, 1.5e-2
+ *   - hex:       0x1f, 0XAB, 0x1.8p3 (hex float)
+ *   - bin:       0b1010 (rare)
+ *
+ * Inside strings and comments we copy through unchanged. */
+static char *pre_pass_separate_numbers(const char *src, size_t len, size_t *out_len) {
+    buf out = {0};
+    int s = S_CODE;
+    size_t i = 0;
+    while (i < len) {
+        char c = src[i];
+        if (s == S_CODE) {
+            if (c == '\'') { s = S_SQ; buf_put(&out, c); i++; continue; }
+            if (c == '"')  { s = S_DQ; buf_put(&out, c); i++; continue; }
+            if (c == '-' && i + 1 < len && src[i+1] == '-') {
+                /* Line or block comment */
+                if (i + 3 < len && src[i+2] == '[' && src[i+3] == '[') {
+                    /* Block: copy through to closing ]] */
+                    buf_put(&out, src[i++]);
+                    buf_put(&out, src[i++]);
+                    buf_put(&out, src[i++]);
+                    buf_put(&out, src[i++]);
+                    while (i + 1 < len && !(src[i] == ']' && src[i+1] == ']')) {
+                        buf_put(&out, src[i++]);
+                    }
+                    if (i < len) buf_put(&out, src[i++]);
+                    if (i < len) buf_put(&out, src[i++]);
+                    continue;
+                }
+                /* Line comment: copy until newline */
+                while (i < len && src[i] != '\n') buf_put(&out, src[i++]);
+                continue;
+            }
+            /* Number literal? Detect a digit, OR a `.` followed by a digit,
+             * but only when the previous emitted char isn't an identifier
+             * (so `foo.bar` doesn't get re-lexed as a number). */
+            int starts_number = 0;
+            if (isdigit((unsigned char)c)) {
+                int prev_id = (out.len > 0) &&
+                    (isalnum((unsigned char)out.data[out.len-1]) || out.data[out.len-1] == '_');
+                if (!prev_id) starts_number = 1;
+            } else if (c == '.' && i + 1 < len && isdigit((unsigned char)src[i+1])) {
+                int prev_id = (out.len > 0) &&
+                    (isalnum((unsigned char)out.data[out.len-1]) || out.data[out.len-1] == '_'
+                     || out.data[out.len-1] == ')' || out.data[out.len-1] == ']');
+                if (!prev_id) starts_number = 1;
+            }
+            if (starts_number) {
+                /* Emit the number. Branch on hex vs decimal vs bin. */
+                int is_hex = 0, is_bin = 0;
+                if (c == '0' && i + 1 < len &&
+                    (src[i+1] == 'x' || src[i+1] == 'X')) {
+                    is_hex = 1;
+                    buf_put(&out, src[i++]);
+                    buf_put(&out, src[i++]);
+                } else if (c == '0' && i + 1 < len &&
+                           (src[i+1] == 'b' || src[i+1] == 'B')) {
+                    is_bin = 1;
+                    buf_put(&out, src[i++]);
+                    buf_put(&out, src[i++]);
+                }
+                if (is_hex) {
+                    while (i < len) {
+                        char nc = src[i];
+                        if (isdigit((unsigned char)nc) ||
+                            (nc >= 'a' && nc <= 'f') ||
+                            (nc >= 'A' && nc <= 'F') ||
+                            nc == '.') {
+                            buf_put(&out, nc); i++;
+                        } else if (nc == 'p' || nc == 'P') {
+                            buf_put(&out, nc); i++;
+                            if (i < len && (src[i] == '+' || src[i] == '-')) {
+                                buf_put(&out, src[i++]);
+                            }
+                            while (i < len && isdigit((unsigned char)src[i])) {
+                                buf_put(&out, src[i++]);
+                            }
+                            break;
+                        } else break;
+                    }
+                } else if (is_bin) {
+                    while (i < len && (src[i] == '0' || src[i] == '1')) {
+                        buf_put(&out, src[i++]);
+                    }
+                } else {
+                    /* Decimal: digits, then optional `.` digits, then optional `e[±]digits`. */
+                    while (i < len && isdigit((unsigned char)src[i])) buf_put(&out, src[i++]);
+                    if (i < len && src[i] == '.') {
+                        buf_put(&out, src[i++]);
+                        while (i < len && isdigit((unsigned char)src[i])) buf_put(&out, src[i++]);
+                    }
+                    if (i < len && (src[i] == 'e' || src[i] == 'E')) {
+                        buf_put(&out, src[i++]);
+                        if (i < len && (src[i] == '+' || src[i] == '-')) buf_put(&out, src[i++]);
+                        while (i < len && isdigit((unsigned char)src[i])) buf_put(&out, src[i++]);
+                    }
+                }
+                /* If next char is alpha/underscore, insert a space. */
+                if (i < len) {
+                    char nc = src[i];
+                    if (isalpha((unsigned char)nc) || nc == '_') {
+                        buf_put(&out, ' ');
+                    }
+                }
+                continue;
+            }
+            buf_put(&out, c);
+            i++;
+        } else if (s == S_SQ) {
+            buf_put(&out, c);
+            if (c == '\\' && i + 1 < len) { buf_put(&out, src[i+1]); i += 2; continue; }
+            if (c == '\'') s = S_CODE;
+            i++;
+        } else if (s == S_DQ) {
+            buf_put(&out, c);
+            if (c == '\\' && i + 1 < len) { buf_put(&out, src[i+1]); i += 2; continue; }
+            if (c == '"') s = S_CODE;
+            i++;
+        }
+    }
+    if (out.data) {
+        if (buf_reserve(&out, 1) == 0) out.data[out.len] = 0;
+    } else {
+        out.data = (char *)malloc(1);
+        if (out.data) out.data[0] = 0;
+    }
+    if (out_len) *out_len = out.len;
+    return out.data;
+}
+
+char *p8_rewrite_lua(const char *src_in, size_t len_in, size_t *out_len) {
+    /* Run the number-separation pre-pass first so the dialect rewriter
+     * sees a stream where numbers and following identifiers are
+     * cleanly separated. */
+    size_t pre_len = 0;
+    char *pre = pre_pass_separate_numbers(src_in, len_in, &pre_len);
+    if (!pre) return NULL;
+    const char *src = pre;
+    size_t len = pre_len;
+
     buf out = {0};
 
     /* Very small state across lines: inside block comment (`--[[`). */

@@ -109,6 +109,7 @@ add_library(thumbyp8_runtime STATIC
     ${P8_ROOT}/src/p8_rewrite.c
     ${P8_ROOT}/src/p8_font.c
     ${P8_ROOT}/src/p8_audio.c
+    ${P8_ROOT}/src/p8_p8png.c
 )
 target_include_directories(thumbyp8_runtime PUBLIC ${P8_ROOT}/src)
 target_compile_options(thumbyp8_runtime PRIVATE -O3)
