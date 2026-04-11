@@ -428,7 +428,18 @@ static NodeType parse_core_expr(Em *E) {
         em_tok(E,&E->last_taken,NT_GROUP); return NT_GROUP;
     }
     if (is_unary_op(E->src,pk->off,pk->len)) {
-        Token t=em_take(E); em_tok(E,&t,NT_UNARY_OP);
+        Token t=em_take(E);
+        /* Unary ~ → bnot() for PICO-8 fixed-point compat */
+        if (t.len==1 && E->src[t.off]=='~') {
+            buf_appends(E->out, "bnot(");
+            E->ptight = true;
+            E->pvl = 0;
+            E->pt = TT_NONE;
+            parse_expr(E, K_UNARY_OPS_PREC);
+            buf_appendc(E->out, ')');
+            return NT_UNARY_OP;
+        }
+        em_tok(E,&t,NT_UNARY_OP);
         parse_expr(E,K_UNARY_OPS_PREC); return NT_UNARY_OP;
     }
     if (tok_eq(pk,E->src,"?")) return parse_print(E);
@@ -438,8 +449,26 @@ static NodeType parse_core_expr(Em *E) {
     E->failed=true; return NT_NONE;
 }
 
+/* Map PICO-8 fixed-point binary operators to function call names.
+ * Returns NULL if the operator should be emitted as-is (Lua-compatible). */
+static const char *fixpoint_binop_func(const char *src, int off, int len) {
+    if (len==2 && memcmp(src+off,"<<",2)==0) return "shl";
+    if (len==2 && memcmp(src+off,">>",2)==0) return "shr";
+    if (len==3 && memcmp(src+off,">>>",3)==0) return "lshr";
+    if (len==3 && memcmp(src+off,"<<>",3)==0) return "rotl";
+    if (len==3 && memcmp(src+off,">><",3)==0) return "rotr";
+    if (len==2 && memcmp(src+off,"^^",2)==0) return "bxor";
+    if (len==1 && src[off]=='&') return "band";
+    if (len==1 && src[off]=='|') return "bor";
+    /* ~ as binary XOR (only when used as binary, not unary NOT) */
+    if (len==1 && src[off]=='~') return "bxor";
+    return NULL;
+}
+
 static NodeType parse_expr(Em *E, int prec) {
     if (E->failed) return NT_NONE;
+    /* Save output position before LHS — needed to wrap with func() */
+    size_t lhs_start = E->out->len;
     NodeType et = parse_core_expr(E);
     if (E->failed) return NT_NONE;
     while (!E->failed) {
@@ -485,7 +514,47 @@ static NodeType parse_expr(Em *E, int prec) {
             else if (is_right_binop(E->src,pk->off,pk->len)) ok=(prec<=bp);
             else ok=(prec<bp);
             if (ok) {
-                Token op=em_take(E); em_tok(E,&op,NT_BINARY_OP);
+                Token op=em_take(E);
+                /* PICO-8 fixed-point ops → function calls.
+                 * Wrap: LHS already emitted → extract from buffer,
+                 * emit func(lhs, rhs). */
+                const char *fn = fixpoint_binop_func(E->src, op.off, op.len);
+                if (fn) {
+                    /* Extract LHS text from output buffer */
+                    size_t lhs_len = E->out->len - lhs_start;
+                    char *lhs_text = (char *)malloc(lhs_len + 1);
+                    if (lhs_text) {
+                        memcpy(lhs_text, E->out->data + lhs_start, lhs_len);
+                        lhs_text[lhs_len] = 0;
+                    }
+                    /* Rewind output to before LHS */
+                    E->out->len = lhs_start;
+                    /* Ensure a space before func name if the preceding
+                     * char is alphanumeric (e.g. "elseif" → "elseif band(") */
+                    if (lhs_start > 0) {
+                        char prev = E->out->data[lhs_start - 1];
+                        if (prev != ' ' && prev != '\n' && prev != '(' &&
+                            prev != '[' && prev != '{' && prev != ',')
+                            buf_appendc(E->out, ' ');
+                    }
+                    /* Emit: func(lhs, rhs) */
+                    buf_appends(E->out, fn);
+                    buf_appendc(E->out, '(');
+                    if (lhs_text) { buf_append(E->out, lhs_text, lhs_len); free(lhs_text); }
+                    buf_appends(E->out, ", ");
+                    /* Update spacing state */
+                    E->ptight = true;
+                    E->pvl = 0;
+                    E->pt = TT_NONE;
+                    /* Parse RHS */
+                    parse_expr(E, bp);
+                    /* Close paren */
+                    buf_appendc(E->out, ')');
+                    et = NT_BINARY_OP;
+                    /* Update lhs_start to cover the whole func() for nested ops */
+                    continue;
+                }
+                em_tok(E,&op,NT_BINARY_OP);
                 parse_expr(E,bp); et=NT_BINARY_OP; continue;
             }
         }

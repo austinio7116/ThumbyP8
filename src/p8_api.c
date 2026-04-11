@@ -400,53 +400,60 @@ static int l_p8_sqrt(lua_State *L) {
 
 /* PICO-8 pre-0.2 bitwise functions (now usually expressed as << >>
  * & | ~ in newer carts, but old carts still call these by name). */
+/* PICO-8 uses 16.16 fixed-point for all bitwise shift operations.
+ * 0.5 in fixed-point is 0x00008000. Shifting works on the 32-bit
+ * fixed-point representation, then the result is converted back.
+ * This handles fractional values: 0.5 << 1 = 1.0, 0.5 >> 1 = 0.25. */
+static int32_t to_fix16(lua_Number v) { return (int32_t)(v * 65536.0f); }
+static lua_Number from_fix16(int32_t v) { return (lua_Number)v / 65536.0f; }
+
 static int l_p8_shl(lua_State *L) {
     TRACE("shl");
-    int x = (int)argn0(L, 1);
+    int32_t x = to_fix16(argn0(L, 1));
     int n = (int)argn0(L, 2);
-    lua_pushinteger(L, ((unsigned)x) << (n & 31));
+    lua_pushnumber(L, from_fix16((int32_t)(((uint32_t)x) << (n & 31))));
     return 1;
 }
 static int l_p8_shr(lua_State *L) {
     TRACE("shr");
-    int x = (int)argn0(L, 1);
+    int32_t x = to_fix16(argn0(L, 1));
     int n = (int)argn0(L, 2);
     /* Arithmetic right shift to match PICO-8's signed semantics. */
-    lua_pushinteger(L, x >> (n & 31));
+    lua_pushnumber(L, from_fix16(x >> (n & 31)));
     return 1;
 }
 static int l_p8_lshr(lua_State *L) {
     TRACE("lshr");
-    unsigned x = (unsigned)argn0(L, 1);
+    uint32_t x = (uint32_t)to_fix16(argn0(L, 1));
     int n = (int)argn0(L, 2);
-    lua_pushinteger(L, x >> (n & 31));
+    lua_pushnumber(L, from_fix16((int32_t)(x >> (n & 31))));
     return 1;
 }
 static int l_p8_band(lua_State *L) {
     TRACE("band");
-    int a = (int)argn0(L, 1);
-    int b = (int)argn0(L, 2);
-    lua_pushinteger(L, a & b);
+    int32_t a = to_fix16(argn0(L, 1));
+    int32_t b = to_fix16(argn0(L, 2));
+    lua_pushnumber(L, from_fix16(a & b));
     return 1;
 }
 static int l_p8_bor(lua_State *L) {
     TRACE("bor");
-    int a = (int)argn0(L, 1);
-    int b = (int)argn0(L, 2);
-    lua_pushinteger(L, a | b);
+    int32_t a = to_fix16(argn0(L, 1));
+    int32_t b = to_fix16(argn0(L, 2));
+    lua_pushnumber(L, from_fix16(a | b));
     return 1;
 }
 static int l_p8_bxor(lua_State *L) {
     TRACE("bxor");
-    int a = (int)argn0(L, 1);
-    int b = (int)argn0(L, 2);
-    lua_pushinteger(L, a ^ b);
+    int32_t a = to_fix16(argn0(L, 1));
+    int32_t b = to_fix16(argn0(L, 2));
+    lua_pushnumber(L, from_fix16(a ^ b));
     return 1;
 }
 static int l_p8_bnot(lua_State *L) {
     TRACE("bnot");
-    int a = (int)argn0(L, 1);
-    lua_pushinteger(L, ~a);
+    int32_t a = to_fix16(argn0(L, 1));
+    lua_pushnumber(L, from_fix16(~a));
     return 1;
 }
 
@@ -696,16 +703,16 @@ static int l_p8_set_fps(lua_State *L)  { TRACE("set_fps");  (void)L; return 0; }
 /* Bitwise rotation helpers (PICO-8 pre-0.2 API). */
 static int l_p8_rotl(lua_State *L) {
     TRACE("rotl");
-    uint32_t x = (uint32_t)argn0(L, 1);
+    uint32_t x = (uint32_t)to_fix16(argn0(L, 1));
     int n = (int)argn0(L, 2) & 31;
-    lua_pushinteger(L, (int32_t)((x << n) | (x >> (32 - n))));
+    lua_pushnumber(L, from_fix16((int32_t)((x << n) | (x >> (32 - n)))));
     return 1;
 }
 static int l_p8_rotr(lua_State *L) {
     TRACE("rotr");
-    uint32_t x = (uint32_t)argn0(L, 1);
+    uint32_t x = (uint32_t)to_fix16(argn0(L, 1));
     int n = (int)argn0(L, 2) & 31;
-    lua_pushinteger(L, (int32_t)((x >> n) | (x << (32 - n))));
+    lua_pushnumber(L, from_fix16((int32_t)((x >> n) | (x << (32 - n)))));
     return 1;
 }
 

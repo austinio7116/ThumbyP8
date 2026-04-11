@@ -397,13 +397,11 @@ static char *pre_tokenize(const char *src, size_t len, size_t *out_len) {
             goto next;
         }
 
-        /* ---- ^^ → ~ (XOR), but NOT ^^= (compound rewriter handles that) ---- */
-        if (c == '^' && i+1 < len && s[i+1] == '^') {
-            if (i+2 < len && s[i+2] == '=') {
-                buf_puts(&o, "^^=", 3); i += 3; /* keep for compound rewriter */
-            } else {
-                buf_putc(&o, '~'); i += 2;
-            }
+        /* ---- ^^= kept for compound rewriter ---- */
+        /* ^^ as binary XOR is now handled by p8_shrinko (→ bxor() call).
+         * Only ^^= compound assign needs to pass through to rewrite step. */
+        if (c == '^' && i+1 < len && s[i+1] == '^' && i+2 < len && s[i+2] == '=') {
+            buf_puts(&o, "^^=", 3); i += 3;
             goto next;
         }
 
@@ -435,122 +433,10 @@ static char *pre_tokenize(const char *src, size_t len, size_t *out_len) {
             goto next;
         }
 
-        /* ---- >>>/<<>/>>< shift/rotate → function calls ---- */
-        /* >>> → lshr, <<> → rotl, >>< → rotr.
-         * On shrinko8 output, these have spaces around them.
-         * We need `lhs >>> rhs` → `lshr(lhs, rhs)`.
-         * Strategy: when we see the op, walk back in output to find
-         * LHS start (stop at , = ; keywords ( [ {), wrap. */
-        if ((c == '>' && i+2 < len && s[i+1] == '>' && s[i+2] == '>') ||
-            (c == '<' && i+2 < len && s[i+1] == '<' && s[i+2] == '>') ||
-            (c == '>' && i+2 < len && s[i+1] == '>' && s[i+2] == '<')) {
-            const char *fn;
-            if (c == '>' && s[i+2] == '>') fn = "lshr";
-            else if (c == '<') fn = "rotl";
-            else fn = "rotr";
-            i += 3;
-            /* Skip optional = after (compound assign like >>>=) */
-            if (i < len && s[i] == '=') {
-                /* This is a compound assign — we can't easily rewrite.
-                 * Emit as-is and let compound rewriter handle it later.
-                 * Actually compound rewriter doesn't know these ops.
-                 * For now emit the function form. */
-            }
-
-            /* Find LHS in already-emitted output: walk back past spaces
-             * to find the end of the LHS expression.
-             * Stop at: , = ; ( [ { or start of output or newline */
-            size_t lhs_end = o.len;
-            while (lhs_end > 0 && (o.d[lhs_end-1]==' '||o.d[lhs_end-1]=='\t'))
-                lhs_end--;
-            size_t lhs_start = lhs_end;
-            int depth = 0;
-            while (lhs_start > 0) {
-                char pc = o.d[lhs_start - 1];
-                if (pc == ')' || pc == ']' || pc == '}') { depth++; lhs_start--; continue; }
-                if (pc == '(' || pc == '[' || pc == '{') {
-                    if (depth == 0) break;
-                    depth--; lhs_start--; continue;
-                }
-                if (depth == 0 && (pc == ',' || pc == '=' || pc == ';' || pc == '\n'))
-                    break;
-                lhs_start--;
-            }
-            /* Skip leading whitespace in LHS */
-            while (lhs_start < lhs_end && (o.d[lhs_start]==' '||o.d[lhs_start]=='\t'))
-                lhs_start++;
-
-            /* Extract LHS text, truncate output to before LHS */
-            size_t lhs_len2 = lhs_end - lhs_start;
-            char *lhs_copy = (char *)malloc(lhs_len2 + 1);
-            if (lhs_copy) {
-                memcpy(lhs_copy, o.d + lhs_start, lhs_len2);
-                lhs_copy[lhs_len2] = 0;
-            }
-            /* Preserve any whitespace/prefix before LHS */
-            o.len = lhs_start;
-
-            /* Emit: fn(lhs, rhs) — but we need to find RHS too.
-             * Actually, we haven't consumed the RHS yet. Emit
-             * `fn(lhs, ` and let the main loop process RHS naturally.
-             * We need to find where RHS ends to close the `)`.
-             * This is tricky in a single-pass...
-             *
-             * Simpler: emit `fn(lhs,` now, skip whitespace, consume
-             * RHS until we hit a binary-precedence boundary
-             * (another op at same or lower precedence, comma, ), etc).
-             * But this requires precedence knowledge...
-             *
-             * Simplest correct approach: wrap minimally.
-             * Emit `fn(lhs, ` — then scan forward for the RHS end
-             * (next `)`, `,`, `\n`, or binary op at depth 0). */
-            buf_str(&o, fn);
-            buf_putc(&o, '(');
-            if (lhs_copy) { buf_puts(&o, lhs_copy, lhs_len2); free(lhs_copy); }
-            buf_str(&o, ", ");
-
-            /* Skip whitespace after operator */
-            while (i < len && (s[i] == ' ' || s[i] == '\t')) i++;
-
-            /* Find RHS end: scan forward for end boundary */
-            size_t rhs_start2 = i;
-            int rd = 0;
-            while (i < len) {
-                unsigned char rc = s[i];
-                if (rc == '\n') break;
-                if (rc == '"' || rc == '\'') {
-                    unsigned char q = rc; buf_putc(&o, rc); i++;
-                    while (i < len && s[i] != '\n') {
-                        if (s[i] == '\\' && i+1 < len) { buf_putc(&o, s[i]); buf_putc(&o, s[i+1]); i += 2; continue; }
-                        if ((unsigned char)s[i] == q) { buf_putc(&o, s[i]); i++; break; }
-                        buf_putc(&o, s[i]); i++;
-                    }
-                    continue;
-                }
-                if (rc == '(' || rc == '[' || rc == '{') rd++;
-                if (rc == ')' || rc == ']' || rc == '}') {
-                    if (rd == 0) break;
-                    rd--;
-                }
-                if (rd == 0 && (rc == ',' || rc == ';')) break;
-                /* Stop at comparison/logical ops at depth 0 */
-                if (rd == 0) {
-                    if ((rc == '=' && i+1 < len && s[i+1] == '=') ||
-                        (rc == '~' && i+1 < len && s[i+1] == '=') ||
-                        (rc == '<' && !(i+1 < len && s[i+1] == '<')) ||
-                        (rc == '>' && !(i+1 < len && s[i+1] == '>')) ||
-                        (rc == '|') || (rc == '&') || (rc == '~' && !(i+1 < len && s[i+1] == '=')))
-                        break;
-                }
-                buf_putc(&o, rc);
-                i++;
-            }
-            /* Trim trailing whitespace from RHS */
-            while (o.len > 0 && (o.d[o.len-1]==' '||o.d[o.len-1]=='\t'))
-                o.len--;
-            buf_putc(&o, ')');
-            goto next;
-        }
+        /* NOTE: shift/rotate (<<, >>, >>>, <<>, >><) and bitwise ops
+         * (&, |, ^^, ~) are now handled by p8_shrinko's streaming parser,
+         * which converts them to function calls (shl, shr, lshr, rotl,
+         * rotr, band, bor, bxor, bnot) during unminification. */
 
         /* ---- UTF-8 glyph in code → numeric value ---- */
         if (c >= 0x80) {
