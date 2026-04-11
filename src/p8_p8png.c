@@ -284,10 +284,9 @@ static char *extract_lua(const unsigned char *cart, size_t *out_len) {
 int p8_p8png_load(p8_machine *m,
                   const unsigned char *png_data, size_t png_len,
                   char **out_lua_src, size_t *out_lua_len,
-                  uint8_t **out_label_4bpp) {
+                  uint16_t *out_thumb) {
     if (out_lua_src) *out_lua_src = NULL;
     if (out_lua_len) *out_lua_len = 0;
-    if (out_label_4bpp) *out_label_4bpp = NULL;
 
     int w = 0, h = 0, ch = 0;
     unsigned char *rgba = stbi_load_from_memory(png_data, (int)png_len,
@@ -296,6 +295,27 @@ int p8_p8png_load(p8_machine *m,
         fprintf(stderr, "[ThumbyP8] p8.png: PNG decode failed: %s\n",
                 stbi_failure_reason() ? stbi_failure_reason() : "(?)");
         return -1;
+    }
+
+    /* Extract thumbnail from the visible PNG image BEFORE freeing RGBA.
+     * The PICO-8 label area sits at (16,24) in the 160×205 PNG.
+     * Crop and convert to RGB565 in the caller's buffer. */
+    if (out_thumb) {
+        int x0 = (w >= 144) ? 16 : 0;
+        int y0 = (h >= 152) ? 24 : 0;
+        int cw = (w >= 144) ? 128 : (w < 128 ? w : 128);
+        int chh = (h >= 152) ? 128 : (h < 128 ? h : 128);
+        memset(out_thumb, 0, 128 * 128 * sizeof(uint16_t));
+        for (int y = 0; y < chh; y++) {
+            const unsigned char *row = rgba + ((y0 + y) * w + x0) * 4;
+            uint16_t *dst = out_thumb + y * 128;
+            for (int x = 0; x < cw; x++) {
+                unsigned char r = row[x*4 + 0];
+                unsigned char g = row[x*4 + 1];
+                unsigned char b = row[x*4 + 2];
+                dst[x] = (uint16_t)(((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3));
+            }
+        }
     }
 
     /* Extract 32 KB of cart bytes from low 2 bits of each pixel.
@@ -309,29 +329,12 @@ int p8_p8png_load(p8_machine *m,
     unpack_cart_bytes(rgba, w, h, cart, 0x8000);
     stbi_image_free(rgba);
 
-    /* Copy ROM region into machine memory. */
-    rom_to_machine(m, cart);
-
-    /* Optionally return the label (4bpp framebuffer at 0x6000..0x7fff).
-     * This is 8 KB — much cheaper than re-decoding the PNG (~131 KB). */
-    if (out_label_4bpp) {
-        uint8_t *lbl = (uint8_t *)malloc(0x2000);
-        if (lbl) {
-            memcpy(lbl, cart + 0x6000, 0x2000);
-            *out_label_4bpp = lbl;
-        }
-    }
-
     /* Decompress Lua section. */
     size_t lua_len = 0;
     char *lua = extract_lua(cart, &lua_len);
     free(cart);
     if (!lua) {
         fprintf(stderr, "[ThumbyP8] p8.png: Lua section decode failed\n");
-        if (out_label_4bpp && *out_label_4bpp) {
-            free(*out_label_4bpp);
-            *out_label_4bpp = NULL;
-        }
         return -1;
     }
     if (out_lua_src) *out_lua_src = lua;

@@ -249,18 +249,19 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     screen_log(m, sl, "decoding png...");
     p8_log_to_file("convert: decoding png");
 
-    /* NOTE: p8_p8png_load writes into m->mem (ROM region 0x0000-0x42ff).
-     * It does NOT touch the framebuffer at 0x6000, so screen_log text
-     * remains visible. The label (4bpp thumbnail) is returned separately. */
+    /* p8_p8png_load decodes the PNG once:
+     *   - Extracts ROM from steganographic low bits → m->mem
+     *   - Extracts thumbnail from visible PNG pixels → sl (RGB565)
+     *   - Decompresses Lua source
+     * The thumbnail goes directly into the scanline buffer (sl) which
+     * we then save as the BMP. */
     char *lua_src = NULL;
     size_t lua_len = 0;
-    uint8_t *label_4bpp = NULL;
     int rc = p8_p8png_load(m, png_data, (size_t)png_sz,
-                            &lua_src, &lua_len, &label_4bpp);
+                            &lua_src, &lua_len, sl);
     if (rc != 0 || !lua_src) {
         free(png_data);
         if (lua_src) free(lua_src);
-        if (label_4bpp) free(label_4bpp);
         screen_log(m, sl, "ERR: png decode fail");
         p8_log_to_file("convert: png decode failed");
         return -4;
@@ -282,27 +283,9 @@ static int convert_one_cart(const char *stem, p8_machine *m,
         f_close(&f);
     }
 
-    /* Generate BMP thumbnail from the 4bpp label returned by p8_p8png_load.
-     * Uses the scanline buffer as scratch — screen_log will re-present
-     * the framebuffer on the next call, fixing the display. */
+    /* Save BMP thumbnail from the RGB565 data p8_p8png_load put in sl */
     screen_log(m, sl, "saving bmp...");
-    if (label_4bpp) {
-        static const uint16_t pal[16] = {
-            0x0000, 0x194a, 0x792a, 0x042a, 0xaa86, 0x5aa9, 0xc618, 0xff9d,
-            0xf809, 0xfd00, 0xff64, 0x0726, 0x2d7f, 0x83b3, 0xfbb5, 0xfe75,
-        };
-        for (int y = 0; y < 128; y++) {
-            for (int x = 0; x < 128; x += 2) {
-                uint8_t b = label_4bpp[y * 64 + (x >> 1)];
-                sl[y * 128 + x]     = pal[b & 0x0f];
-                sl[y * 128 + x + 1] = pal[(b >> 4) & 0x0f];
-            }
-        }
-        p8_bmp_save_128(bmp_path, sl);
-        free(label_4bpp);
-        label_4bpp = NULL;
-    }
-    screen_log(m, sl, "png freed");
+    p8_bmp_save_128(bmp_path, sl);
 
     screen_log(m, sl, "translating...");
     p8_log_to_file("convert: translating");
