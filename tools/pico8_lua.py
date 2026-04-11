@@ -729,6 +729,7 @@ def rewrite_pico8_to_lua(src: str) -> str:
     # Compound assigns first — shorthand if rewrites depend on the
     # already-expanded form so the inserted "end" doesn't truncate
     # an unfinished compound.
+    tokens = rewrite_print_shorthand(tokens)
     tokens = rewrite_compound_assigns(tokens)
     # Shift/rotate ops may nest (inner parens first). Iterate
     # until no more ops remain, re-tokenizing after each pass
@@ -744,6 +745,61 @@ def rewrite_pico8_to_lua(src: str) -> str:
         tokens = tokenize(_join_tokens_spaced(tokens))
         tokens = normalise_tokens(tokens)
     return _emit_with_spacing(tokens)
+
+
+def rewrite_print_shorthand(tokens: List[Token]) -> List[Token]:
+    """
+    PICO-8's `?expr` is shorthand for `print(expr)`. It can appear:
+      - At the start of a line (handled by the regex in post_fix_lua)
+      - Mid-expression: `func(?expr, other)` → `func(print(expr), other)`
+
+    The return value of print() is the pixel width of the rendered
+    text, which carts use for centering and layout.
+
+    We find each `?` OP token in expression context, walk forward
+    to find where the print argument ends (the next `,` or `)` at
+    the same paren depth), and wrap as `print(arg)`.
+    """
+    edits = []
+    for i, t in enumerate(tokens):
+        if t.kind != 'OP' or t.text != '?':
+            continue
+        # PICO-8 `?` is greedy: it consumes ALL remaining tokens to
+        # end-of-line or enclosing `)` as print()'s arguments. The
+        # commas between args are print's own arg separators, NOT
+        # separators for the enclosing context.
+        depth = 0
+        j = i + 1
+        while j < len(tokens):
+            tj = tokens[j]
+            if tj.kind in ('WS', 'COMMENT'):
+                j += 1
+                continue
+            if tj.kind == 'NL' and depth == 0:
+                break
+            if tj.kind == 'OP':
+                if tj.text in ('(', '[', '{'):
+                    depth += 1
+                elif tj.text in (')', ']', '}'):
+                    if depth == 0:
+                        break  # closing paren of enclosing context
+                    depth -= 1
+                elif depth == 0 and tj.text == ';':
+                    break
+            j += 1
+        arg_text = _join_tokens_spaced(tokens[i+1:j]).strip()
+        if arg_text:
+            edits.append((i, j, f'print({arg_text})'))
+        else:
+            edits.append((i, j, 'print()'))
+
+    if not edits:
+        return tokens
+
+    out = list(tokens)
+    for start, end, new_text in sorted(edits, key=lambda e: e[0], reverse=True):
+        out[start:end] = [Token('RAW', new_text)]
+    return out
 
 
 def rewrite_shift_rotate_ops(tokens: List[Token]) -> List[Token]:

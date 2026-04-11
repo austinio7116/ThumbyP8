@@ -790,7 +790,12 @@ def post_fix_lua(text: str) -> str:
         raw = raw.replace(needle, replacement)
     text = raw.decode('latin-1')
 
-    # 4. PICO-8-only operators → Lua equivalents
+    # 4. Insert `;` before `(` at the start of a line — Lua's parser
+    #    can't disambiguate `(expr).field = val` vs a function call.
+    #    PICO-8 handles this; standard Lua needs the semicolon hint.
+    text = re.sub(r'^(\s*)\(', r'\1;(', text, flags=re.MULTILINE)
+
+    # 5. PICO-8-only operators → Lua equivalents
     text = _translate_dialect_operators(text)
 
     # 5. String literal contents — convert P8SCII escapes and high
