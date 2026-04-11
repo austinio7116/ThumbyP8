@@ -691,13 +691,16 @@ def _translate_dialect_operators(src: str) -> str:
                     i = j
                     continue
 
-        # 1. `\` integer divide → `//`. Make sure we don't grab a
-        #    backslash that's part of an unrecognised escape inside a
-        #    string — but we already handled strings above, so any
-        #    backslash here is in code.
+        # 1. `\` integer divide → `//`. shrinko8 may output either
+        #    single `\` or double `\\` for the PICO-8 int-divide op.
+        #    Both map to a single Lua `//`. Strings are already
+        #    handled above, so any backslash here is in code.
         if c == '\\':
             out.append('//')
             i += 1
+            # Skip a second `\` if shrinko8 doubled it.
+            if i < n and src[i] == '\\':
+                i += 1
             continue
 
         # 2. `^^` XOR → `~` (Lua 5.4 bitwise XOR).
@@ -731,21 +734,19 @@ def _translate_dialect_operators(src: str) -> str:
             if i + 1 < n and (src[i + 1].isalnum() or src[i + 1] in '_('):
                 func = {'@': 'peek', '%': 'peek2', '$': 'peek4'}[c]
                 out.append(f'{func}(')
-                # Find end of primary expression
                 j = i + 1
                 if src[j] == '(':
-                    # Balanced paren group
-                    depth = 1
-                    j += 1
-                    while j < n and depth > 0:
-                        if src[j] == '(': depth += 1
-                        elif src[j] == ')': depth -= 1
-                        if depth > 0: j += 1
-                    out.append(src[i + 2:j])  # inside the parens
-                    out.append(')')
-                    i = j + 1
+                    # Paren-wrapped: emit `peek(` then continue the
+                    # main loop from the `(` — the state machine will
+                    # process the inner content (including any `\`
+                    # integer-divide operators) and emit the matching
+                    # `)` naturally. We DON'T copy the inner content
+                    # verbatim because that would bypass operator
+                    # translation.
+                    i = j + 1  # skip past `(` — our `peek(` already has it
                 else:
-                    # Identifier / number / dotted chain
+                    # Identifier / number / dotted chain — safe to
+                    # copy verbatim since these can't contain ops.
                     while j < n and (src[j].isalnum() or src[j] in '_.'):
                         j += 1
                     out.append(src[i + 1:j])

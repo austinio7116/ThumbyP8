@@ -74,6 +74,7 @@ COMPOUND_OPS = {'+=', '-=', '*=', '/=', '%=', '^=', '..=', '//=',
 # first so '..=' beats '..' beats '.', '==' beats '=', etc.
 MULTI_CHAR_OPS = [
     # 3-char first (longest match wins)
+    '>>>', '<<>', '>><',                   # PICO-8 shift/rotate
     '..=', '...', '//=', '<<=', '>>=', '^^=',
     # 2-char
     '..', '//', '<<', '>>', '^^',
@@ -729,13 +730,121 @@ def rewrite_pico8_to_lua(src: str) -> str:
     # already-expanded form so the inserted "end" doesn't truncate
     # an unfinished compound.
     tokens = rewrite_compound_assigns(tokens)
-    # NOTE: rewrite_if_do_blocks and rewrite_shorthand_if_while are
-    # DISABLED. shrinko8 -U already long-forms all if statements,
-    # and post_fix_lua handles the residual `if cond do` → `then`.
-    # The shorthand-if rewriter has a known false-positive on multi-
-    # clause conditions like `if (a) or (b) then` where it treats
-    # the first `)` as the end of the shorthand condition.
+    # Shift/rotate ops may nest (inner parens first). Iterate
+    # until no more ops remain, re-tokenizing after each pass
+    # so inner rewrites are visible to outer ones.
+    for _ in range(10):
+        tokens = rewrite_shift_rotate_ops(tokens)
+        # Check if any remain
+        if not any(t.kind == 'OP' and t.text in ('>>>', '<<>', '>><')
+                   for t in tokens):
+            break
+        # Re-tokenize the emitted text so the RAW tokens from the
+        # last pass get re-parsed into proper tokens.
+        tokens = tokenize(_join_tokens_spaced(tokens))
+        tokens = normalise_tokens(tokens)
     return _emit_with_spacing(tokens)
+
+
+def rewrite_shift_rotate_ops(tokens: List[Token]) -> List[Token]:
+    """
+    Rewrite PICO-8 shift/rotate operators to function calls:
+      a >>> b  →  lshr(a, b)   (logical right shift)
+      a <<> b  →  rotl(a, b)   (rotate left)
+      a >>< b  →  rotr(a, b)   (rotate right)
+
+    These are binary operators at the same precedence as << and >>.
+    We find each operator, walk left to find the LHS (back to the
+    nearest comma, open-paren, assignment, or statement keyword)
+    and right for the RHS (forward to the nearest comma, close-paren,
+    or end of expression). Then splice in `func(LHS, RHS)`.
+    """
+    OP_MAP = {'>>>': 'lshr', '<<>': 'rotl', '>><': 'rotr'}
+
+    # Collect edits
+    edits = []
+    for i, t in enumerate(tokens):
+        if t.kind != 'OP' or t.text not in OP_MAP:
+            continue
+        func = OP_MAP[t.text]
+
+        # LHS: walk back from i, skipping WS, to find the start.
+        # Stop at: comma, open-paren/bracket/brace, assignment,
+        # comparison, logical op, statement keyword, semicolon, NL.
+        STOP_KW = {'and', 'or', 'not', 'then', 'do', 'end', 'else',
+                    'elseif', 'return', 'local', 'if', 'while', 'for',
+                    'function', 'repeat', 'until', 'in'}
+        CMP = {'<', '>', '<=', '>=', '==', '~='}
+
+        lhs_start = i
+        j = i - 1
+        depth = 0
+        while j >= 0:
+            tj = tokens[j]
+            if tj.kind in ('WS', 'COMMENT'):
+                j -= 1
+                continue
+            if tj.kind == 'NL' and depth == 0:
+                break
+            if tj.kind == 'OP':
+                if tj.text in (')', ']', '}'):
+                    depth += 1
+                elif tj.text in ('(', '[', '{'):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif depth == 0 and (tj.text in CMP or tj.text in (',', '=', ';')):
+                    break
+            if tj.kind == 'IDENT' and depth == 0 and tj.text in STOP_KW:
+                break
+            lhs_start = j
+            j -= 1
+
+        # RHS: walk forward from i, skipping WS, same stop set
+        # but also stop at close-paren/bracket/brace.
+        STOP_AFTER = {',', ')', ']', '}', ';'}
+        rhs_end = i + 1
+        j = i + 1
+        depth = 0
+        while j < len(tokens):
+            tj = tokens[j]
+            if tj.kind in ('WS', 'COMMENT'):
+                j += 1
+                continue
+            if tj.kind == 'NL' and depth == 0:
+                break
+            if tj.kind == 'OP':
+                if tj.text in ('(', '[', '{'):
+                    depth += 1
+                elif tj.text in (')', ']', '}'):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif depth == 0 and tj.text in STOP_AFTER:
+                    break
+                elif depth == 0 and tj.text in CMP:
+                    break
+            if tj.kind == 'IDENT' and tj.text in STOP_KW:
+                break
+            rhs_end = j + 1
+            j += 1
+
+        lhs_text = _join_tokens_spaced(tokens[lhs_start:i]).strip()
+        rhs_text = _join_tokens_spaced(tokens[i+1:rhs_end]).strip()
+        new_text = f"{func}({lhs_text}, {rhs_text})"
+        edits.append((lhs_start, rhs_end, new_text))
+
+    if not edits:
+        return tokens
+
+    # Only apply the FIRST (leftmost) edit per pass. The outer loop
+    # in rewrite_pico8_to_lua re-tokenizes and repeats, so inner
+    # operators (inside parens) get processed before outer ones.
+    edits.sort(key=lambda e: e[0])
+    start, end, new_text = edits[0]
+    out = list(tokens)
+    out[start:end] = [Token('RAW', new_text)]
+    return out
 
 
 # ----------------------------------------------------------------------
