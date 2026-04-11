@@ -1612,21 +1612,22 @@ static char *rewrite_compounds(const char *src, size_t len, size_t *out_len) {
 /* ================================================================== */
 /* Public API                                                          */
 /* ================================================================== */
-char *p8_translate_full(const char *src, size_t len, size_t *out_len) {
+char *p8_translate_full(char *src, size_t len, size_t *out_len) {
     if (!src || len == 0) {
+        free(src);
         char *e = (char *)malloc(1);
         if (e) e[0] = 0;
         if (out_len) *out_len = 0;
         return e;
     }
 
-    /* Step 1: shrinko8 unminify — tokenize + parse + emit clean Lua.
-     * This is the faithful C port of shrinko8 -U. It handles ALL
-     * PICO-8 syntax including shorthand if/while (converted to
-     * longhand), minified token boundaries, ? print, etc.
-     * The output is well-formatted Lua with proper whitespace. */
+    /* Step 1: shrinko8 unminify. Free src FIRST — shrinko reads it
+     * via streaming tokenizer and doesn't need it after returning.
+     * Actually shrinko needs src alive during parsing, so we free
+     * after. But we free it as soon as s1 is ready. */
     size_t s1_len = 0;
     char *s1 = p8_shrinko_unminify(src, len, &s1_len);
+    free(src);  /* take ownership — free before next allocation */
     if (!s1) return NULL;
 
     /* Step 2: character-level transforms (post_fix_lua equivalent).

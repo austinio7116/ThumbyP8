@@ -60,10 +60,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Translate PICO-8 dialect → Lua 5.4. */
+    /* Translate PICO-8 dialect → Lua 5.4.
+     * p8_translate_full takes ownership of lua_src. */
     size_t out_len = 0;
     char *translated = p8_translate_full(lua_src, lua_len, &out_len);
-    free(lua_src);
+    /* lua_src already freed inside p8_translate_full */
     if (!translated) {
         fprintf(stderr, "p8_translate_full failed\n");
         return 1;

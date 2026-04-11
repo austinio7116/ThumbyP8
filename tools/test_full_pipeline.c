@@ -136,8 +136,8 @@ int main(int argc, char **argv) {
     /* 5. Translate */
     printf("  translating...\n");
     size_t translated_len = 0;
+    /* p8_translate_full takes ownership of lua_src */
     char *translated = p8_translate_full(lua_src, lua_len, &translated_len);
-    free(lua_src);
     if (!translated) {
         fprintf(stderr, "  translate FAILED\n");
         return 1;

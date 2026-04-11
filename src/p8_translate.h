@@ -21,7 +21,8 @@
 #include <stddef.h>
 
 /* Full translation: PICO-8 source → Lua 5.4 source.
- * Returns malloc'd NUL-terminated buffer. Caller frees. */
-char *p8_translate_full(const char *src, size_t len, size_t *out_len);
+ * Takes ownership of src and frees it internally to reduce peak memory.
+ * Returns malloc'd NUL-terminated buffer. Caller frees result. */
+char *p8_translate_full(char *src, size_t len, size_t *out_len);
 
 #endif

@@ -286,10 +286,10 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     screen_log(m, sl, "translating...");
     p8_log_to_file("convert: translating");
 
+    /* p8_translate_full takes ownership of lua_src and frees it */
     size_t translated_len = 0;
     char *translated = p8_translate_full(lua_src, lua_len, &translated_len);
-    free(lua_src);
-    lua_src = NULL;
+    lua_src = NULL;  /* already freed inside p8_translate_full */
 
     if (!translated) {
         screen_log(m, sl, "ERR: translate OOM");
