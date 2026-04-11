@@ -27,6 +27,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -355,6 +356,201 @@ static char *pre_tokenize(const char *src, size_t len, size_t *out_len) {
         }
 
         at_line_start = 0;
+
+        /* ---- Binary literal 0b... → decimal ---- */
+        if (c == '0' && i+1 < len &&
+            (s[i+1] == 'b' || s[i+1] == 'B') &&
+            (i == 0 || !is_id(s[i-1]))) {
+            size_t j = i + 2;
+            int val = 0; int has_bits = 0;
+            while (j < len && (s[j]=='0'||s[j]=='1'||s[j]=='_')) {
+                if (s[j] != '_') { val = (val<<1)|(s[j]-'0'); has_bits = 1; }
+                j++;
+            }
+            double frac = 0.0; int has_frac = 0;
+            if (j < len && s[j] == '.' && j+1 < len && (s[j+1]=='0'||s[j+1]=='1')) {
+                j++; int bit = 1;
+                while (j < len && (s[j]=='0'||s[j]=='1'||s[j]=='_')) {
+                    if (s[j] != '_') { if (s[j]=='1') frac += 1.0/(1<<bit); bit++; has_frac=1; }
+                    j++;
+                }
+            }
+            if (has_bits || has_frac) {
+                if (has_frac) {
+                    char tmp[32]; int n2 = snprintf(tmp, sizeof(tmp), "%.10g", (double)val+frac);
+                    buf_puts(&o, tmp, n2);
+                } else {
+                    buf_int(&o, val);
+                }
+                i = j; goto next;
+            }
+        }
+
+        /* ---- \\ → // (integer divide), \\= → //= ---- */
+        if (c == '\\') {
+            if (i+1 < len && s[i+1] == '=') {
+                buf_puts(&o, "//=", 3); i += 2;
+            } else {
+                buf_puts(&o, "//", 2); i++;
+                if (i < len && s[i] == '\\') i++; /* skip doubled \\ */
+            }
+            goto next;
+        }
+
+        /* ---- ^^ → ~ (XOR), but NOT ^^= (compound rewriter handles that) ---- */
+        if (c == '^' && i+1 < len && s[i+1] == '^') {
+            if (i+2 < len && s[i+2] == '=') {
+                buf_puts(&o, "^^=", 3); i += 3; /* keep for compound rewriter */
+            } else {
+                buf_putc(&o, '~'); i += 2;
+            }
+            goto next;
+        }
+
+        /* ---- @/%/$ peek shorthands ---- */
+        if ((c == '@' || c == '%' || c == '$') &&
+            i+1 < len && (is_id(s[i+1]) || s[i+1] == '(')) {
+            /* % and $ after a value are binary ops (modulo), not peek.
+             * Check previous output char for value context. */
+            if (c != '@' && o.len > 0) {
+                unsigned char prev = (unsigned char)o.d[o.len-1];
+                if (is_id(prev) || prev == ')' || prev == ']' ||
+                    (prev >= '0' && prev <= '9')) {
+                    buf_putc(&o, c); i++; goto next; /* binary op */
+                }
+            }
+            const char *fn = (c=='@') ? "peek(" :
+                             (c=='%') ? "peek2(" : "peek4(";
+            buf_str(&o, fn);
+            i++;
+            if (s[i] == '(') {
+                i++; /* skip ( — our fn( already has it */
+            } else {
+                size_t j = i;
+                while (j < len && (is_id(s[j]) || s[j] == '.')) j++;
+                buf_puts(&o, (const char*)s+i, j-i);
+                buf_putc(&o, ')');
+                i = j;
+            }
+            goto next;
+        }
+
+        /* ---- >>>/<<>/>>< shift/rotate → function calls ---- */
+        /* >>> → lshr, <<> → rotl, >>< → rotr.
+         * On shrinko8 output, these have spaces around them.
+         * We need `lhs >>> rhs` → `lshr(lhs, rhs)`.
+         * Strategy: when we see the op, walk back in output to find
+         * LHS start (stop at , = ; keywords ( [ {), wrap. */
+        if ((c == '>' && i+2 < len && s[i+1] == '>' && s[i+2] == '>') ||
+            (c == '<' && i+2 < len && s[i+1] == '<' && s[i+2] == '>') ||
+            (c == '>' && i+2 < len && s[i+1] == '>' && s[i+2] == '<')) {
+            const char *fn;
+            if (c == '>' && s[i+2] == '>') fn = "lshr";
+            else if (c == '<') fn = "rotl";
+            else fn = "rotr";
+            i += 3;
+            /* Skip optional = after (compound assign like >>>=) */
+            if (i < len && s[i] == '=') {
+                /* This is a compound assign — we can't easily rewrite.
+                 * Emit as-is and let compound rewriter handle it later.
+                 * Actually compound rewriter doesn't know these ops.
+                 * For now emit the function form. */
+            }
+
+            /* Find LHS in already-emitted output: walk back past spaces
+             * to find the end of the LHS expression.
+             * Stop at: , = ; ( [ { or start of output or newline */
+            size_t lhs_end = o.len;
+            while (lhs_end > 0 && (o.d[lhs_end-1]==' '||o.d[lhs_end-1]=='\t'))
+                lhs_end--;
+            size_t lhs_start = lhs_end;
+            int depth = 0;
+            while (lhs_start > 0) {
+                char pc = o.d[lhs_start - 1];
+                if (pc == ')' || pc == ']' || pc == '}') { depth++; lhs_start--; continue; }
+                if (pc == '(' || pc == '[' || pc == '{') {
+                    if (depth == 0) break;
+                    depth--; lhs_start--; continue;
+                }
+                if (depth == 0 && (pc == ',' || pc == '=' || pc == ';' || pc == '\n'))
+                    break;
+                lhs_start--;
+            }
+            /* Skip leading whitespace in LHS */
+            while (lhs_start < lhs_end && (o.d[lhs_start]==' '||o.d[lhs_start]=='\t'))
+                lhs_start++;
+
+            /* Extract LHS text, truncate output to before LHS */
+            size_t lhs_len2 = lhs_end - lhs_start;
+            char *lhs_copy = (char *)malloc(lhs_len2 + 1);
+            if (lhs_copy) {
+                memcpy(lhs_copy, o.d + lhs_start, lhs_len2);
+                lhs_copy[lhs_len2] = 0;
+            }
+            /* Preserve any whitespace/prefix before LHS */
+            o.len = lhs_start;
+
+            /* Emit: fn(lhs, rhs) — but we need to find RHS too.
+             * Actually, we haven't consumed the RHS yet. Emit
+             * `fn(lhs, ` and let the main loop process RHS naturally.
+             * We need to find where RHS ends to close the `)`.
+             * This is tricky in a single-pass...
+             *
+             * Simpler: emit `fn(lhs,` now, skip whitespace, consume
+             * RHS until we hit a binary-precedence boundary
+             * (another op at same or lower precedence, comma, ), etc).
+             * But this requires precedence knowledge...
+             *
+             * Simplest correct approach: wrap minimally.
+             * Emit `fn(lhs, ` — then scan forward for the RHS end
+             * (next `)`, `,`, `\n`, or binary op at depth 0). */
+            buf_str(&o, fn);
+            buf_putc(&o, '(');
+            if (lhs_copy) { buf_puts(&o, lhs_copy, lhs_len2); free(lhs_copy); }
+            buf_str(&o, ", ");
+
+            /* Skip whitespace after operator */
+            while (i < len && (s[i] == ' ' || s[i] == '\t')) i++;
+
+            /* Find RHS end: scan forward for end boundary */
+            size_t rhs_start2 = i;
+            int rd = 0;
+            while (i < len) {
+                unsigned char rc = s[i];
+                if (rc == '\n') break;
+                if (rc == '"' || rc == '\'') {
+                    unsigned char q = rc; buf_putc(&o, rc); i++;
+                    while (i < len && s[i] != '\n') {
+                        if (s[i] == '\\' && i+1 < len) { buf_putc(&o, s[i]); buf_putc(&o, s[i+1]); i += 2; continue; }
+                        if ((unsigned char)s[i] == q) { buf_putc(&o, s[i]); i++; break; }
+                        buf_putc(&o, s[i]); i++;
+                    }
+                    continue;
+                }
+                if (rc == '(' || rc == '[' || rc == '{') rd++;
+                if (rc == ')' || rc == ']' || rc == '}') {
+                    if (rd == 0) break;
+                    rd--;
+                }
+                if (rd == 0 && (rc == ',' || rc == ';')) break;
+                /* Stop at comparison/logical ops at depth 0 */
+                if (rd == 0) {
+                    if ((rc == '=' && i+1 < len && s[i+1] == '=') ||
+                        (rc == '~' && i+1 < len && s[i+1] == '=') ||
+                        (rc == '<' && !(i+1 < len && s[i+1] == '<')) ||
+                        (rc == '>' && !(i+1 < len && s[i+1] == '>')) ||
+                        (rc == '|') || (rc == '&') || (rc == '~' && !(i+1 < len && s[i+1] == '=')))
+                        break;
+                }
+                buf_putc(&o, rc);
+                i++;
+            }
+            /* Trim trailing whitespace from RHS */
+            while (o.len > 0 && (o.d[o.len-1]==' '||o.d[o.len-1]=='\t'))
+                o.len--;
+            buf_putc(&o, ')');
+            goto next;
+        }
 
         /* ---- UTF-8 glyph in code → numeric value ---- */
         if (c >= 0x80) {
@@ -1218,6 +1414,202 @@ static char *emit_tokens(toklist_t *tl, size_t *out_len) {
 }
 
 /* ================================================================== */
+/* Step 3: Compound assign expansion + != → ~=                         */
+/*                                                                     */
+/* Operates line-by-line on well-formatted shrinko8 output.            */
+/* Single growable buffer, no token array, no per-token malloc.        */
+/* ================================================================== */
+
+/* Compound ops we recognise (sorted longest first) */
+static const char *k_compound_ops[] = {
+    "//=", "<<=", ">>=", "^^=", "..=",
+    "+=", "-=", "*=", "/=", "%=", "^=", "|=", "&=",
+    NULL
+};
+
+/* Match a compound op at position p in line of length n.
+ * Returns the op length (2 or 3) or 0 if no match. */
+static int match_compound(const char *line, size_t p, size_t n) {
+    for (const char **op = k_compound_ops; *op; op++) {
+        int ol = (int)strlen(*op);
+        if (p + (size_t)ol <= n && memcmp(line + p, *op, ol) == 0)
+            return ol;
+    }
+    return 0;
+}
+
+static char *rewrite_compounds(const char *src, size_t len, size_t *out_len) {
+    buf_t o = {0};
+    buf_grow(&o, len + len / 4);
+
+    size_t i = 0;
+    while (i < len) {
+        /* Find end of line */
+        size_t j = i;
+        while (j < len && src[j] != '\n') j++;
+        const char *line = src + i;
+        size_t ll = j - i;
+
+        /* Scan this line for != and compound assigns in code state.
+         * String/comment aware. */
+        int state = 0; /* 0=code, 1=sq, 2=dq, 3=comment */
+        size_t compound_pos = 0;
+        int compound_len = 0;
+        int ne_found = 0;
+        size_t ne_pos = 0;
+
+        for (size_t k = 0; k < ll; k++) {
+            char c = line[k];
+            if (state == 0) {
+                if (c == '\'') state = 1;
+                else if (c == '"') state = 2;
+                else if (c == '-' && k+1 < ll && line[k+1] == '-') { state = 3; break; }
+                else if (c == '!' && k+1 < ll && line[k+1] == '=') {
+                    ne_found = 1; ne_pos = k;
+                } else if (!compound_len) {
+                    int cl = match_compound(line, k, ll);
+                    if (cl > 0) {
+                        compound_pos = k;
+                        compound_len = cl;
+                    }
+                }
+            } else if (state == 1) {
+                if (c == '\\' && k+1 < ll) k++;
+                else if (c == '\'') state = 0;
+            } else if (state == 2) {
+                if (c == '\\' && k+1 < ll) k++;
+                else if (c == '"') state = 0;
+            }
+        }
+
+        if (!compound_len && !ne_found) {
+            /* No transforms needed — emit line as-is */
+            buf_puts(&o, line, ll);
+        } else {
+            /* First apply != → ~= */
+            char *work = (char *)malloc(ll + 1);
+            if (work) {
+                memcpy(work, line, ll);
+                work[ll] = 0;
+                /* Replace ALL != → ~= in code state */
+                {
+                    int ws = 0;
+                    for (size_t k = 0; k < ll; k++) {
+                        if (ws == 0) {
+                            if (work[k] == '\'') ws = 1;
+                            else if (work[k] == '"') ws = 2;
+                            else if (work[k] == '-' && k+1<ll && work[k+1]=='-') break;
+                            else if (work[k] == '!' && k+1<ll && work[k+1]=='=')
+                                work[k] = '~';
+                        } else if (ws == 1) {
+                            if (work[k] == '\\' && k+1<ll) k++;
+                            else if (work[k] == '\'') ws = 0;
+                        } else if (ws == 2) {
+                            if (work[k] == '\\' && k+1<ll) k++;
+                            else if (work[k] == '"') ws = 0;
+                        }
+                    }
+                }
+
+                if (compound_len) {
+                    /* Expand compound assign.
+                     * Find LHS: walk back from compound_pos.
+                     * On clean shrinko8 output, the LHS is everything
+                     * from the last statement boundary to the op. */
+                    size_t lhs_end = compound_pos;
+                    while (lhs_end > 0 && (work[lhs_end-1]==' '||work[lhs_end-1]=='\t'))
+                        lhs_end--;
+                    size_t lhs_start = lhs_end;
+                    /* Walk back through identifier/index chain */
+                    while (lhs_start > 0) {
+                        char pc = work[lhs_start - 1];
+                        if (is_id((unsigned char)pc) || pc == '.' || pc == ':') {
+                            lhs_start--;
+                        } else if (pc == ']') {
+                            int d = 1; lhs_start--;
+                            while (lhs_start > 0 && d > 0) {
+                                if (work[lhs_start-1] == ']') d++;
+                                if (work[lhs_start-1] == '[') d--;
+                                lhs_start--;
+                            }
+                        } else if (pc == ' ' || pc == '\t') {
+                            lhs_start--;
+                        } else {
+                            break;
+                        }
+                    }
+                    /* Skip leading whitespace in LHS */
+                    while (lhs_start < lhs_end &&
+                           (work[lhs_start]==' '||work[lhs_start]=='\t'))
+                        lhs_start++;
+
+                    /* Get the Lua op (strip trailing =) */
+                    char op_text[4] = {0};
+                    int op_text_len = compound_len - 1;
+                    memcpy(op_text, work + compound_pos, op_text_len);
+                    /* ^^= → ~ (Lua XOR) */
+                    if (strcmp(op_text, "^^") == 0) {
+                        strcpy(op_text, "~"); op_text_len = 1;
+                    }
+
+                    /* RHS: after the op= to end of line (or comment) */
+                    size_t rhs_start = compound_pos + compound_len;
+                    while (rhs_start < ll && (work[rhs_start]==' '||work[rhs_start]=='\t'))
+                        rhs_start++;
+                    size_t rhs_end = ll;
+                    /* Trim trailing comment */
+                    {
+                        int rs = 0;
+                        for (size_t k = rhs_start; k < rhs_end; k++) {
+                            if (rs == 0) {
+                                if (work[k]=='\'' ) rs = 1;
+                                else if (work[k]=='"') rs = 2;
+                                else if (work[k]=='-' && k+1<rhs_end && work[k+1]=='-') {
+                                    rhs_end = k; break;
+                                }
+                            } else if (rs == 1) {
+                                if (work[k]=='\\' && k+1<rhs_end) k++;
+                                else if (work[k]=='\'') rs = 0;
+                            } else if (rs == 2) {
+                                if (work[k]=='\\' && k+1<rhs_end) k++;
+                                else if (work[k]=='"') rs = 0;
+                            }
+                        }
+                    }
+                    while (rhs_end > rhs_start &&
+                           (work[rhs_end-1]==' '||work[rhs_end-1]=='\t'))
+                        rhs_end--;
+
+                    /* Emit: prefix + lhs = lhs op (rhs) + tail */
+                    buf_puts(&o, work, lhs_start);  /* prefix (indentation) */
+                    buf_puts(&o, work + lhs_start, lhs_end - lhs_start); /* lhs */
+                    buf_str(&o, " = ");
+                    buf_puts(&o, work + lhs_start, lhs_end - lhs_start); /* lhs again */
+                    buf_putc(&o, ' ');
+                    buf_puts(&o, op_text, op_text_len);
+                    buf_str(&o, " (");
+                    buf_puts(&o, work + rhs_start, rhs_end - rhs_start);
+                    buf_putc(&o, ')');
+                    /* Tail: comment etc */
+                    if (rhs_end < ll) buf_puts(&o, work + rhs_end, ll - rhs_end);
+                } else {
+                    /* Just != → ~= applied */
+                    buf_puts(&o, work, ll);
+                }
+                free(work);
+            } else {
+                buf_puts(&o, line, ll);
+            }
+        }
+
+        if (j < len) buf_putc(&o, '\n');
+        i = j + (j < len ? 1 : 0);
+    }
+
+    return buf_finish(&o, out_len);
+}
+
+/* ================================================================== */
 /* Public API                                                          */
 /* ================================================================== */
 char *p8_translate_full(const char *src, size_t len, size_t *out_len) {
@@ -1248,32 +1640,17 @@ char *p8_translate_full(const char *src, size_t len, size_t *out_len) {
     free(s1);
     if (!s2) return NULL;
 
-    /* Step 3: token-level rewrites (pico8_lua.py equivalent).
-     * Handles: !=→~=, 0b→decimal, \\→//, ^^→~, @/%/$ peek shorthands,
-     * compound assigns, shift/rotate ops.
-     * Shorthand if/while are already longhand from shrinko8.
-     * if-do→then is already handled by shrinko8. */
-    toklist_t tl = {0};
-    tokenize(s2, (int)s2_len, &tl);
+    /* Step 3: compound assign expansion.
+     * On clean shrinko8 output, compound assigns are on their own lines
+     * with proper whitespace. Scan for `op=` tokens and expand
+     * `lhs op= rhs` → `lhs = lhs op (rhs)`. Also handle != → ~=.
+     *
+     * This is a single-buffer pass — no per-token mallocs. */
+    size_t s3_len = 0;
+    char *result = rewrite_compounds(s2, s2_len, &s3_len);
     free(s2);
+    if (!result) return NULL;
 
-    normalise_tokens(&tl);
-    rewrite_peek_shorthands(&tl);
-    rewrite_if_do(&tl);        /* safety: catch any remaining if-do */
-    rewrite_compound_assigns(&tl);
-    rewrite_shift_rotate(&tl);
-
-    /* Re-tokenize to fix spacing in RAW tokens from rewrites */
-    {
-        size_t tmp_len;
-        char *tmp = emit_tokens(&tl, &tmp_len);
-        tl_free(&tl);
-        memset(&tl, 0, sizeof(tl));
-        tokenize(tmp, (int)tmp_len, &tl);
-        free(tmp);
-    }
-
-    char *result = emit_tokens(&tl, out_len);
-    tl_free(&tl);
+    if (out_len) *out_len = s3_len;
     return result;
 }

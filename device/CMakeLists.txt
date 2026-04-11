@@ -110,7 +110,6 @@ add_library(thumbyp8_runtime STATIC
     ${P8_ROOT}/src/p8_font.c
     ${P8_ROOT}/src/p8_audio.c
     ${P8_ROOT}/src/p8_cart.c
-    ${P8_ROOT}/src/p8_rewrite.c
     ${P8_ROOT}/src/p8_translate.c
     ${P8_ROOT}/src/p8_shrinko.c
     ${P8_ROOT}/src/p8_p8png.c

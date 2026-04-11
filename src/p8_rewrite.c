@@ -753,6 +753,8 @@ char *p8_rewrite_lua(const char *src_in, size_t len_in, size_t *out_len) {
         i = j + (j < len);
     }
 
+    free(pre);  /* free the pre-pass buffer */
+
     if (!out.data) {
         out.data = (char *)malloc(1);
         if (!out.data) return NULL;
