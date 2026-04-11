@@ -348,6 +348,67 @@ int p8_p8png_load(p8_machine *m,
     return 0;
 }
 
+/* --- IO-based loader: reads PNG from callbacks, no input buffer --- */
+
+int p8_p8png_load_io(p8_machine *m,
+                     p8_png_io *io, void *io_user,
+                     char **out_lua_src, size_t *out_lua_len,
+                     uint16_t *out_thumb) {
+    if (out_lua_src) *out_lua_src = NULL;
+    if (out_lua_len) *out_lua_len = 0;
+
+    /* stbi_io_callbacks matches our p8_png_io layout exactly */
+    stbi_io_callbacks cb;
+    cb.read = io->read;
+    cb.skip = io->skip;
+    cb.eof  = io->eof;
+
+    int w = 0, h = 0, ch = 0;
+    unsigned char *rgba = stbi_load_from_callbacks(&cb, io_user,
+                                                    &w, &h, &ch, 4);
+    if (!rgba) {
+        fprintf(stderr, "[ThumbyP8] p8.png io: decode failed: %s\n",
+                stbi_failure_reason() ? stbi_failure_reason() : "(?)");
+        return -1;
+    }
+
+    /* Thumbnail */
+    if (out_thumb) {
+        int x0 = (w >= 144) ? 16 : 0;
+        int y0 = (h >= 152) ? 24 : 0;
+        int cw2 = (w >= 144) ? 128 : (w < 128 ? w : 128);
+        int ch2 = (h >= 152) ? 128 : (h < 128 ? h : 128);
+        memset(out_thumb, 0, 128 * 128 * sizeof(uint16_t));
+        for (int y = 0; y < ch2; y++) {
+            const unsigned char *row = rgba + ((y0 + y) * w + x0) * 4;
+            uint16_t *dst = out_thumb + y * 128;
+            for (int x = 0; x < cw2; x++) {
+                unsigned char r = row[x*4+0], g = row[x*4+1], b = row[x*4+2];
+                dst[x] = (uint16_t)(((r&0xf8)<<8)|((g&0xfc)<<3)|(b>>3));
+            }
+        }
+    }
+
+    /* Cart bytes */
+    unsigned char *cart = (unsigned char *)malloc(0x8000);
+    if (!cart) { stbi_image_free(rgba); return -1; }
+    memset(cart, 0, 0x8000);
+    unpack_cart_bytes(rgba, w, h, cart, 0x8000);
+    stbi_image_free(rgba);
+
+    rom_to_machine(m, cart);
+
+    size_t lua_len = 0;
+    char *lua = extract_lua(cart, &lua_len);
+    free(cart);
+    if (!lua) return -1;
+
+    if (out_lua_src) *out_lua_src = lua;
+    else free(lua);
+    if (out_lua_len) *out_lua_len = lua_len;
+    return 0;
+}
+
 int p8_p8png_decode_thumbnail(const unsigned char *png_data, size_t png_len,
                                uint16_t *out_thumb) {
     int w = 0, h = 0, ch = 0;

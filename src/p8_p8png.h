@@ -51,6 +51,22 @@ int p8_p8png_load(p8_machine *m,
                   char **out_lua_src, size_t *out_lua_len,
                   uint16_t *out_thumb);
 
+/* Load from a FAT filesystem path, using stbi callbacks to read
+ * directly from the file. Avoids holding the full PNG in heap
+ * (~70KB saved at peak vs the memory-buffer version).
+ * fat_read/fat_seek/fat_eof are function pointers matching stb_image's
+ * stbi_io_callbacks. On device, pass FatFs wrappers. On host, pass
+ * stdio wrappers. Returns 0 on success. */
+typedef struct {
+    int  (*read)(void *user, char *data, int size);
+    void (*skip)(void *user, int n);
+    int  (*eof)(void *user);
+} p8_png_io;
+int p8_p8png_load_io(p8_machine *m,
+                     p8_png_io *io, void *io_user,
+                     char **out_lua_src, size_t *out_lua_len,
+                     uint16_t *out_thumb);
+
 /* Decode the visible PNG to a 128×128 RGB565 thumbnail. The PNG is
  * 160×205; we crop the central 128×128 (PICO-8's standard label area
  * sits at offset 16,24 in the PNG). out_thumb must hold 128*128 u16. */

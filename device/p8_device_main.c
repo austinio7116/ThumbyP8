@@ -162,6 +162,24 @@ static int boot_filesystem(void) {
 /* ------------------------------------------------------------------ */
 
 /* lua_dump writer callback — appends to a growable buffer. */
+/* FatFs IO callbacks for stb_image — reads PNG directly from file,
+ * avoiding the need to hold the entire compressed PNG in heap. */
+static int fat_io_read(void *user, char *data, int size) {
+    FIL *f = (FIL *)user;
+    UINT br = 0;
+    f_read(f, data, (UINT)size, &br);
+    return (int)br;
+}
+static void fat_io_skip(void *user, int n) {
+    FIL *f = (FIL *)user;
+    f_lseek(f, f_tell(f) + (FSIZE_t)n);
+}
+static int fat_io_eof(void *user) {
+    FIL *f = (FIL *)user;
+    return f_eof(f);
+}
+static const p8_png_io g_fat_io = { fat_io_read, fat_io_skip, fat_io_eof };
+
 typedef struct {
     unsigned char *data;
     size_t len;
@@ -217,52 +235,29 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     screen_log(m, sl, "opening file...");
 
     /* ---- Phase A: PNG → cart bytes + Lua source ---- */
+    /* Open the PNG file and decode via IO callbacks — stb_image reads
+     * directly from the FAT file, so we never hold the full compressed
+     * PNG (~70KB) in our heap. Peak is stb_image internals only. */
     FIL f;
     if (f_open(&f, png_path, FA_READ) != FR_OK) {
         screen_log(m, sl, "ERR: can't open");
         p8_log_to_file("convert: can't open png");
         return -1;
     }
-    FSIZE_t png_sz = f_size(&f);
     {
         char info[40];
-        snprintf(info, sizeof(info), "size: %lu", (unsigned long)png_sz);
+        snprintf(info, sizeof(info), "size: %lu", (unsigned long)f_size(&f));
         screen_log(m, sl, info);
     }
-    if (png_sz == 0 || png_sz > 200 * 1024) {
-        f_close(&f);
-        screen_log(m, sl, "ERR: bad size");
-        p8_log_to_file("convert: png too large or empty");
-        return -2;
-    }
-    unsigned char *png_data = (unsigned char *)malloc((size_t)png_sz);
-    if (!png_data) {
-        f_close(&f);
-        screen_log(m, sl, "ERR: OOM for png");
-        p8_log_to_file("convert: OOM for png");
-        return -3;
-    }
-    UINT br;
-    f_read(&f, png_data, (UINT)png_sz, &br);
-    f_close(&f);
-    screen_log(m, sl, "file loaded");
 
     screen_log(m, sl, "decoding png...");
     p8_log_to_file("convert: decoding png");
 
-    /* p8_p8png_load decodes the PNG once:
-     *   - Extracts thumbnail from visible PNG pixels → sl (RGB565)
-     *   - Extracts ROM from steganographic low bits → m->mem
-     *   - Decompresses Lua source
-     * IMPORTANT: save BMP and ROM immediately, BEFORE any screen_log
-     * call — screen_log overwrites sl via p8_machine_present. */
     char *lua_src = NULL;
     size_t lua_len = 0;
-    /* p8_p8png_load takes ownership of png_data and frees it
-     * internally after stb_image finishes — reduces peak memory. */
-    int rc = p8_p8png_load(m, png_data, (size_t)png_sz,
-                            &lua_src, &lua_len, sl);
-    png_data = NULL;  /* already freed inside p8_p8png_load */
+    int rc = p8_p8png_load_io(m, (p8_png_io *)&g_fat_io, &f,
+                               &lua_src, &lua_len, sl);
+    f_close(&f);
     if (rc != 0 || !lua_src) {
         if (lua_src) free(lua_src);
         screen_log(m, sl, "ERR: png decode fail");
