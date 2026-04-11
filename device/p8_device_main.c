@@ -250,11 +250,11 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     p8_log_to_file("convert: decoding png");
 
     /* p8_p8png_load decodes the PNG once:
-     *   - Extracts ROM from steganographic low bits → m->mem
      *   - Extracts thumbnail from visible PNG pixels → sl (RGB565)
+     *   - Extracts ROM from steganographic low bits → m->mem
      *   - Decompresses Lua source
-     * The thumbnail goes directly into the scanline buffer (sl) which
-     * we then save as the BMP. */
+     * IMPORTANT: save BMP and ROM immediately, BEFORE any screen_log
+     * call — screen_log overwrites sl via p8_machine_present. */
     char *lua_src = NULL;
     size_t lua_len = 0;
     int rc = p8_p8png_load(m, png_data, (size_t)png_sz,
@@ -266,26 +266,28 @@ static int convert_one_cart(const char *stem, p8_machine *m,
         p8_log_to_file("convert: png decode failed");
         return -4;
     }
-    {
-        char info[40];
-        snprintf(info, sizeof(info), "lua: %d bytes", (int)lua_len);
-        screen_log(m, sl, info);
-    }
 
-    /* Free PNG immediately — we have everything we need now */
-    free(png_data);
-    png_data = NULL;
+    /* Save BMP FIRST — sl still has the thumbnail from p8_p8png_load */
+    p8_bmp_save_128(bmp_path, sl);
 
-    screen_log(m, sl, "saving rom...");
+    /* Save ROM — m->mem has the cart data from p8_p8png_load */
     if (f_open(&f, rom_path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
         UINT bw;
         f_write(&f, m->mem, 0x4300, &bw);
         f_close(&f);
     }
 
-    /* Save BMP thumbnail from the RGB565 data p8_p8png_load put in sl */
-    screen_log(m, sl, "saving bmp...");
-    p8_bmp_save_128(bmp_path, sl);
+    /* Free PNG — we have everything we need now */
+    free(png_data);
+    png_data = NULL;
+
+    /* Now safe to use screen_log (which overwrites sl) */
+    {
+        char info[40];
+        snprintf(info, sizeof(info), "lua: %d bytes", (int)lua_len);
+        screen_log(m, sl, info);
+    }
+    screen_log(m, sl, "rom+bmp saved");
 
     screen_log(m, sl, "translating...");
     p8_log_to_file("convert: translating");
