@@ -677,6 +677,31 @@ int main(void) {
             p8_audio_render(audio_buf, n);
             p8_audio_pwm_push(audio_buf, n);
 
+            /* FPS counter overlay — drawn directly into the 4bpp
+             * framebuffer after _draw returns, before LCD present.
+             * Uses the cart's own camera/clip state so we reset
+             * camera to (0,0) briefly for screen-space drawing. */
+            {
+                static uint32_t fps_last_us = 0;
+                static int fps_display = 0;
+                static int fps_count = 0;
+                uint32_t now_us = (uint32_t)time_us_64();
+                fps_count++;
+                if (now_us - fps_last_us >= 1000000) {
+                    fps_display = fps_count;
+                    fps_count = 0;
+                    fps_last_us = now_us;
+                }
+                int16_t saved_cx = p8_camera_x(&machine);
+                int16_t saved_cy = p8_camera_y(&machine);
+                p8_camera(&machine, 0, 0);
+                char fps_str[8];
+                snprintf(fps_str, sizeof(fps_str), "%d", fps_display);
+                int fw = (int)strlen(fps_str) * P8_FONT_CELL_W;
+                p8_font_draw(&machine, fps_str, 127 - fw, 1, 11);
+                p8_set_camera(&machine, saved_cx, saved_cy);
+            }
+
             p8_lcd_wait_idle();
             p8_machine_present(&machine, scanline);
             p8_lcd_present(scanline);
