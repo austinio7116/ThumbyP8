@@ -424,58 +424,41 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
         p8_lcd_present(sl);
 
         int rc = convert_one_cart(stems[s], m, sl);
-        if (rc == 0) converted++;
-        else {
+        if (rc == 0) {
+            converted++;
+        } else {
             char buf[80];
             snprintf(buf, sizeof(buf), "convert: FAIL %s rc=%d",
                      stems[s], rc);
             p8_log_to_file(buf);
+            /* Write an empty .luac so this cart is skipped on next
+             * boot instead of retrying forever. */
+            char fail_path[80];
+            snprintf(fail_path, sizeof(fail_path), "/carts/%s.luac",
+                     stems[s]);
+            FIL ff;
+            if (f_open(&ff, fail_path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+                f_close(&ff);
         }
 
-        /* Reboot after EACH cart to reclaim fragmented heap.
-         * The conversion pipeline uses ~260KB peak (stb_image RGBA +
-         * zlib + cart bytes + Lua translate). After one full cycle,
-         * the heap is too fragmented for the next cart's stb_image
-         * to find a contiguous 131KB RGBA block.
-         *
-         * Rebooting is fast (~1s). On next boot, the just-converted
-         * cart already has .luac so it's skipped, and the next
-         * unconverted cart gets processed. Repeats until all done. */
-        if (converted > 0) {
-            p8_flash_disk_flush();
+        /* Reboot after EVERY conversion attempt (success or fail)
+         * to reclaim fragmented heap. On next boot, the just-handled
+         * cart has a .luac (real or empty stub) so it's skipped. */
+        p8_flash_disk_flush();
 
-            p8_machine_reset(m);
-            p8_camera(m, 0, 0);
-            p8_cls(m, 1);
-            {
-                char msg[40];
-                snprintf(msg, sizeof(msg), "converted %s", stems[s]);
-                p8_font_draw(m, msg, 4, 50, 11);
-            }
-            {
-                int remaining = 0;
-                for (int r = s + 1; r < n_stems; r++) {
-                    char lp[80];
-                    snprintf(lp, sizeof(lp), "/carts/%s.luac", stems[r]);
-                    FILINFO fi2;
-                    if (f_stat(lp, &fi2) != FR_OK) remaining++;
-                }
-                if (remaining > 0) {
-                    char msg[40];
-                    snprintf(msg, sizeof(msg), "%d more, rebooting...", remaining);
-                    p8_font_draw(m, msg, 12, 62, 7);
-                } else {
-                    p8_font_draw(m, "all done, rebooting...", 4, 62, 7);
-                }
-            }
-            p8_machine_present(m, sl);
-            p8_lcd_wait_idle();
-            p8_lcd_present(sl);
-            sleep_ms(1000);
+        p8_machine_reset(m);
+        p8_camera(m, 0, 0);
+        p8_cls(m, 1);
+        p8_font_draw(m, rc == 0 ? "converted:" : "FAILED:", 4, 46, rc == 0 ? 11 : 8);
+        p8_font_draw(m, stems[s], 4, 56, 7);
+        p8_font_draw(m, "rebooting...", 28, 72, 6);
+        p8_machine_present(m, sl);
+        p8_lcd_wait_idle();
+        p8_lcd_present(sl);
+        sleep_ms(1000);
 
-            watchdog_reboot(0, 0, 0);
-            while (1) tight_loop_contents();
-        }
+        watchdog_reboot(0, 0, 0);
+        while (1) tight_loop_contents();
     }
 
     return converted;
