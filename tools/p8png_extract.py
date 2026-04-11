@@ -514,16 +514,42 @@ def _translate_string_content(src: str) -> str:
 def _strip_code_highbytes(src: str) -> str:
     """
     Walk source and replace any UTF-8 multi-byte sequence (any
-    byte >= 0x80) in CODE state with `0`. PICO-8 source can use
-    special-character glyphs as inline integer constants (e.g.
-    `fillp(▒)` where `▒` is P8SCII byte 0x97 = 151). Lua's lexer
-    rejects raw high bytes outside strings entirely. Replacing
-    with `0` parses cleanly but loses the constant's value, so
-    fill patterns / glyph-driven logic will visually degrade.
+    byte >= 0x80) in CODE state with its **P8SCII byte value** as
+    a decimal integer. PICO-8 source can use special-character
+    glyphs as inline integer constants (e.g. `fillp(▒)` where `▒`
+    is P8SCII byte 0x82 = 130). Lua's lexer rejects raw high bytes
+    outside strings, so we emit the numeric value.
+
+    The mapping table is from fake-08's emojiconversion.cpp (MIT,
+    jtothebell) which has the canonical PICO-8 character set.
 
     Strings and comments are passed through unchanged — those are
     handled by _translate_string_content.
     """
+    # Build a UTF-8 → P8SCII byte-value lookup. Encode each known
+    # PICO-8 glyph to UTF-8 bytes and map to its decimal string.
+    # Table derived from fake-08's emojiconversion.cpp (MIT).
+    _P8_GLYPHS = {
+        # Superscript digits (bytes 0x01-0x08, 0x0B-0x0F)
+        '¹':1, '²':2, '³':3, '⁴':4, '⁵':5, '⁶':6, '⁷':7, '⁸':8,
+        'ᵇ':11, 'ᶜ':12, 'ᵉ':14, 'ᶠ':15,
+        # Symbols (bytes 0x10-0x1F)
+        '▮':16, '■':17, '□':18, '⁙':19, '⁘':20, '‖':21,
+        '◀':22, '▶':23, '「':24, '」':25, '¥':26, '•':27,
+        '、':28, '。':29, '゛':30, '゜':31,
+        # Bytes 0x80-0x9F (special glyphs)
+        '○':128, '█':129, '▒':130, '🐱':131,
+        '⬇':132, '░':133, '✽':134, '●':135,
+        '♥':136, '☉':137, '웃':138, '⌂':139,
+        '⬅':140, '😐':141, '♪':142, '🅾':143,
+        '◆':144, '…':145, '➡':146, '★':147,
+        '⧗':148, '⬆':149, 'ˇ':150, '∧':151,
+        '❎':152, '▤':153, '▥':154,
+    }
+    _UTF8_TO_P8 = {}
+    for ch, val in _P8_GLYPHS.items():
+        _UTF8_TO_P8[ch.encode('utf-8')] = str(val).encode('ascii')
+
     raw = src.encode('latin-1', errors='replace')
     out = bytearray()
     i = 0
@@ -572,14 +598,17 @@ def _strip_code_highbytes(src: str) -> str:
                 out.append(raw[i])
                 i += 1
             continue
-        # Code state: high byte → numeric 0
+        # Code state: high byte → P8SCII byte value (integer)
         if b >= 0x80:
-            # Skip the entire UTF-8 sequence (1-4 bytes)
+            # Determine UTF-8 sequence length
             if   b < 0xc0: skip = 1
             elif b < 0xe0: skip = 2
             elif b < 0xf0: skip = 3
             else:          skip = 4
-            out += b'0'
+            seq = bytes(raw[i:i+skip])
+            # Look up in the glyph table; fall back to 0 for unknown
+            replacement = _UTF8_TO_P8.get(seq, b'0')
+            out += replacement
             i += skip
             continue
         out.append(b)
