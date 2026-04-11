@@ -102,16 +102,18 @@ static int paint_full_thumbnail(p8_machine *m, const char *cart_name) {
     size_t len = 0;
     unsigned char *cart = p8_picker_load_cart(cart_name, &len);
     if (!cart) return 0;
-    static uint16_t thumb[128 * 128];
+    uint16_t *thumb = (uint16_t *)malloc(128 * 128 * sizeof(uint16_t));
+    if (!thumb) return 0;
     int rc = p8_p8png_decode_thumbnail(cart, len, thumb);
     free(cart);
-    if (rc != 0) return 0;
+    if (rc != 0) { free(thumb); return 0; }
     for (int y = 0; y < 128; y++) {
         for (int x = 0; x < 128; x++) {
             int pi = rgb565_to_p8_color(thumb[y * 128 + x], m->rgb565_palette);
             p8_pset(m, x, y, pi);
         }
     }
+    free(thumb);
     return 1;
 }
 
@@ -159,8 +161,11 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
             unsigned char *bmp_bytes = p8_picker_load_cart(bmp_name, &bmp_len);
             int painted = 0;
             if (bmp_bytes) {
-                static uint16_t thumb[128 * 128];
-                if (p8_bmp_load_128(bmp_bytes, bmp_len, thumb) == 0) {
+                /* Dynamically allocated so it returns to the heap
+                 * when the picker exits — saves 32 KB of BSS that
+                 * would otherwise be wasted during gameplay. */
+                uint16_t *thumb = (uint16_t *)malloc(128 * 128 * sizeof(uint16_t));
+                if (thumb && p8_bmp_load_128(bmp_bytes, bmp_len, thumb) == 0) {
                     for (int y = 0; y < 128; y++) {
                         for (int x = 0; x < 128; x++) {
                             int pi = rgb565_to_p8_color(
@@ -170,6 +175,7 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                     }
                     painted = 1;
                 }
+                if (thumb) free(thumb);
                 free(bmp_bytes);
             }
             if (!painted) {

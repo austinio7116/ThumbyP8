@@ -41,14 +41,22 @@ static void *p8_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     return np;
 }
 
-/* Panic handler: Lua calls this if an error escapes a protected
- * call. We must not return — abort cleanly. In Phase 0 the bench
- * harness wraps everything in lua_pcall so this should never fire. */
+/* Panic handler: Lua calls this when an error escapes all
+ * protected calls (lua_pcall). This typically means an OOM during
+ * an internal operation where Lua can't allocate the error
+ * message. WE MUST NOT RETURN — Lua's state is invalid after a
+ * panic. Returning causes the VM to execute on corrupt state,
+ * which on Cortex-M manifests as a hardfault shortly after.
+ *
+ * On device, the hardfault handler will catch the abort and
+ * display the red screen. On host, abort() produces a core dump. */
 static int p8_lua_panic(lua_State *L) {
     const char *msg = lua_tostring(L, -1);
-    fprintf(stderr, "[ThumbyP8] PANIC: unprotected Lua error: %s\n",
-            msg ? msg : "(no message)");
-    return 0;
+    fprintf(stderr, "[ThumbyP8] PANIC: %s\n",
+            msg ? msg : "unrecoverable Lua error (likely OOM)");
+    fflush(stderr);
+    abort();   /* MUST NOT return — Lua state is invalid */
+    return 0;  /* unreachable, keeps the compiler happy */
 }
 
 int p8_vm_init(p8_vm *vm, size_t heap_cap) {

@@ -139,6 +139,13 @@ target_include_directories(p8run_device PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/fatfs
 )
 target_compile_options(p8run_device PRIVATE -O3 -Wno-unused-parameter)
+# Bigger stack. PICO_STACK_SIZE defaults to 0x800 (2 KB!) which is
+# too small for a Lua VM that recurses C→Lua→C during foreach/all
+# chains. The define must reach crt0.S (assembly), not just C files,
+# so we put it on the INTERFACE of pico_platform — that propagates
+# to every translation unit including the SDK's own crt0.
+# 16 KB gives ~80 nested C call frames, enough for any cart.
+target_compile_definitions(pico_platform INTERFACE PICO_STACK_SIZE=0x4000)
 # Direct TinyUSB integration (no pico_stdio_usb — we own the descriptors).
 target_link_libraries(p8run_device PRIVATE
     thumbyp8_runtime

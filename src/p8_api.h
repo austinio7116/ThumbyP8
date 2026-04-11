@@ -23,4 +23,10 @@ void p8_api_install(p8_vm *vm, p8_machine *machine, p8_input *input);
  * cleanly; nonzero on Lua error. Errors print to stderr. */
 int p8_api_call_optional(p8_vm *vm, const char *name);
 
+/* Optional binding-call trace hook. If set to non-NULL, every
+ * traced binding will call this with its name on entry. The device
+ * firmware sets this to p8_log_ring so a hardfault dump shows
+ * which binding was last called. Default NULL → tracing disabled. */
+extern void (*p8_trace_hook)(const char *name);
+
 #endif

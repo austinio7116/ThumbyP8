@@ -94,6 +94,97 @@ ThumbyP8/
 
 ## Architecture
 
+### How the Lua interpreter works
+
+ThumbyP8 doesn't ship its own Lua VM — it **vendors PUC Lua 5.4.7**
+(unmodified, MIT-licensed, the canonical reference implementation
+from lua.org) as a static library and links it into both the host
+emulator and the device firmware. Roughly:
+
+```
+src/p8.c               ← thin C wrapper around lua_State
+  │
+  ▼
+lua/                   ← vendored Lua 5.4.7 source tree
+├── lapi.c             ← Lua C API
+├── ldo.c              ← interpreter loop / call stack
+├── lvm.c              ← bytecode dispatch (the hot loop)
+├── lparser.c          ← parser → bytecode compiler
+├── llex.c             ← lexer
+├── lgc.c              ← garbage collector
+├── lstring.c, ltable.c, lstate.c, lobject.c …
+├── lbaselib.c, ltablib.c, lstrlib.c, lmathlib.c
+└── (we exclude liolib, loslib, loadlib, lcorolib, ldblib for size)
+```
+
+**What runs as Lua bytecode** (interpreted by `lvm.c`):
+- The cart's `_init`, `_update`, and `_draw` functions
+- All entity logic, level generation, particle systems, AI, etc.
+- The cart's helper functions and table manipulation
+- Effectively everything the cart author wrote
+
+**What runs as native C** (called from Lua via the C API):
+- Every PICO-8 API binding in `src/p8_api.c` — `cls`, `pset`,
+  `line`, `rect`, `circ`, `circfill`, `spr`, `sspr`, `map`,
+  `print`, `btn`, `btnp`, `sin`, `cos`, `atan2`, `flr`, `ceil`,
+  `abs`, `min`, `max`, `mid`, `rnd`, `srand`, `sgn`, `sqrt`,
+  bitwise helpers, `peek`/`poke`/`memcpy`/`memset`, `add`/`del`/
+  `count`/`foreach`/`all`, `sub`/`tostr`/`tonum`/`split`/`ord`/`chr`,
+  `sfx`/`music`/`stat`, `printh`, `cartdata`/`dget`/`dset` (stubs),
+  `reload` (no-op stub), `time`/`t`, `cursor`
+- The drawing primitives in `src/p8_draw.c` — Bresenham line,
+  midpoint circle, sprite blit, tilemap walk, palette remap, clip
+- The 4-channel audio synth in `src/p8_audio.c` — phase
+  accumulators, waveform generation, effect modulation, mixing
+- The font glyph blitter in `src/p8_font.c`
+- Cart loading and rewriter in `src/p8_cart.c` + `src/p8_rewrite.c`
+
+**The boundary in practice.** When Celeste calls `circfill(64, 64,
+8, 7)`, the Lua interpreter executes the call instruction in
+`lvm.c`, which jumps to the C function `l_circfill` in
+`p8_api.c`, which reads its arguments off the Lua stack and calls
+`p8_circfill` in `p8_draw.c`, which writes pixels into the 4bpp
+framebuffer at `machine.mem[0x6000..]`. Once per frame, the
+device's main loop calls `p8_machine_present` (also C) to expand
+the framebuffer into a 16-bit RGB565 scanline buffer and DMA it
+to the GC9107 LCD via `p8_lcd_present` (in
+`device/p8_lcd_gc9107.c`).
+
+**Performance.** Lua bytecode dispatch on the RP2350 at 250 MHz
+costs ~148 ns per VM instruction (we measured this in the Phase 0
+benchmark). PICO-8 carts do on the order of 10 000–30 000 VM
+instructions per frame at 30 fps, so the interpreter alone uses
+roughly 1–4 ms of the 33 ms frame budget. The drawing primitives
+and audio synth (both pure C) consume more time than the Lua
+interpreter for most carts.
+
+**Memory.** The Lua VM uses a custom allocator (`p8_lua_alloc` in
+`src/p8.c`) that wraps libc `malloc`/`free`/`realloc` and tracks
+total bytes-in-use against a hard ceiling. The cap is 192 KB on
+device — Lua's `lua_Alloc` callback returns NULL when a request
+would exceed it, which Lua treats as an out-of-memory condition
+that propagates as a Lua error. This bounds runaway allocations
+and gives us a deterministic OOM diagnostic instead of a runtime
+crash. Lua's incremental garbage collector handles cleanup of
+dead tables/strings/closures throughout the cart's lifetime.
+
+**The dialect rewriter** (`src/p8_rewrite.c`) is a thin
+preprocessing layer that runs *before* `luaL_loadbuffer`. It
+walks the cart's Lua source character-by-character with a
+string/comment state machine and translates the residual PICO-8
+dialect bits that the host preprocessor leaves behind: compound
+assignments (`x += 1` → `x = x + (1)`), `!=` → `~=`, and a
+disabled-by-default shorthand-if pass. Once the rewriter is done,
+the source is plain Lua 5.4 that PUC Lua's parser accepts
+without modification.
+
+**The host preprocessor** (`tools/p8png_extract.py`) handles the
+heavy lifting: PNG decode, PXA decompression, and the bulk of
+the dialect translation via vendored shrinko8 (MIT,
+thisismypassport — a full PICO-8 Lua parser/AST/emitter). Doing
+this on the host means the device only ever sees clean text
+`.p8` files; PUC Lua's compiler in `lparser.c` does the rest.
+
 ### Three-layer design
 
 ```

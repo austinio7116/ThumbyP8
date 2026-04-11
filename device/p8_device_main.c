@@ -42,10 +42,29 @@
  * the previous session's writes survived. */
 static int g_boot_reformatted = 0;
 
-/* Static memory: machine + scanline DMA buffer + cart entry table. */
+/* Forward decl — `scanline` is defined later in this file. */
+static uint16_t scanline[128 * 128];
+
+/* HardFault handler — invoked by the Cortex-M when a memory or
+ * usage fault fires (typically a NULL deref, unaligned access, or
+ * stack overflow). Without this, the chip just hangs silently
+ * and the user sees a frozen screen. With this, we paint the
+ * screen red and write a log entry so the next boot's log file
+ * shows the cause. */
+void __not_in_flash_func(isr_hardfault)(void) {
+    p8_log_to_file("!!! HARDFAULT — see ring dump for last events");
+    p8_log_dump_ring();
+    p8_flash_disk_flush();
+    for (int i = 0; i < 128 * 128; i++) scanline[i] = 0xf800;
+    p8_lcd_present(scanline);
+    while (1) tight_loop_contents();
+}
+
+/* Static memory: machine + scanline DMA buffer + cart entry table.
+ * `scanline` was forward-declared above so the hardfault handler
+ * can write to it. */
 static p8_machine     machine;
 static p8_input       input;
-static uint16_t       scanline[128 * 128];
 static p8_cart_entry  cart_entries[P8_PICKER_MAX_CARTS];
 static FATFS          fs;
 
@@ -326,10 +345,15 @@ int main(void) {
         while (1) tight_loop_contents();
     }
     /* Force any cached writes (from mkfs) out to flash before the
-     * USB host gets a chance to see the disk. This is essential —
-     * skipping it leaves the cache and XIP in different states and
-     * Windows reads garbage. */
+     * USB host gets a chance to see the disk. */
     p8_flash_disk_flush();
+
+    /* Always log a boot marker so the user has *something* in
+     * /thumbyp8.log even when no cart errors fire. Helpful for
+     * confirming the log path is alive. */
+    p8_log_to_file("--- thumbyp8 boot ---");
+    p8_log_to_file(g_boot_reformatted ? "fs: reformatted at boot"
+                                       : "fs: kept existing volume");
 
     /* Stage 3: USB stack. Now the disk is fully on flash and we can
      * let the host enumerate and read consistent contents. */
@@ -377,11 +401,21 @@ int main(void) {
                                     cart_entries, n_carts);
         if (chosen < 0 || chosen >= n_carts) chosen = 0;
 
+        /* Persist the cart we're about to launch so the log file
+         * always shows what was running just before any hang. */
+        {
+            char line[80];
+            snprintf(line, sizeof(line), "launch: %s",
+                     cart_entries[chosen].name);
+            p8_log_to_file(line);
+        }
+
         /* Load + run the chosen cart. */
         size_t cart_len = 0;
         unsigned char *cart_bytes = p8_picker_load_cart(
             cart_entries[chosen].name, &cart_len);
         if (!cart_bytes) {
+            p8_log_to_file("load: file read failed");
             splash(0xf800);
             sleep_ms(1500);
             continue;
@@ -392,16 +426,21 @@ int main(void) {
 
         p8_vm vm;
         if (p8_vm_init(&vm, 0) != 0) {
+            p8_log_to_file("load: lua VM init OOM");
             free(cart_bytes);
             splash(0xf800);
             sleep_ms(1500);
             continue;
         }
         p8_api_install(&vm, &machine, &input);
+        /* Route every traced binding into our RAM ring buffer so a
+         * hardfault dump shows the last few bindings the cart called. */
+        p8_trace_hook = p8_log_ring;
 
         p8_cart cart;
         if (p8_cart_load_from_memory(&cart, &machine,
                 (const char *)cart_bytes, cart_len) != 0) {
+            p8_log_to_file("load: cart parse failed");
             free(cart_bytes);
             p8_vm_free(&vm);
             splash(0xf81f);
@@ -409,9 +448,17 @@ int main(void) {
             continue;
         }
         free(cart_bytes);
+        cart_bytes = NULL;
 
         if (cart.lua_source && cart.lua_size > 0) {
             if (p8_vm_do_string(&vm, cart.lua_source, "=cart") != LUA_OK) {
+                /* Get the actual error message from the VM and log
+                 * it before tearing down. */
+                const char *m = lua_tostring(vm.L, -1);
+                char buf[160];
+                snprintf(buf, sizeof(buf), "load: lua compile: %s",
+                         m ? m : "(no msg)");
+                p8_log_to_file(buf);
                 p8_cart_free(&cart);
                 p8_vm_free(&vm);
                 splash(0xffe0);
@@ -420,7 +467,62 @@ int main(void) {
             }
         }
 
-        p8_api_call_optional(&vm, "_init");
+        /* Lua has compiled the source into bytecode — the text is
+         * no longer needed. Free it NOW so the ~43 KB (for a big
+         * cart like delunky) returns to the libc heap and Lua has
+         * more room to grow during _init + gameplay. Without this,
+         * 43 KB of dead source text sits in libc heap the entire
+         * time the cart is running, eating into the 256 KB Lua cap. */
+        p8_cart_free(&cart);
+
+        /* Force a GC cycle to reclaim any transient Lua objects
+         * from the compilation phase before the cart starts. */
+        lua_gc(vm.L, LUA_GCCOLLECT, 0);
+
+        /* Run _init and capture any error explicitly so we can
+         * surface and log it the same way as _update/_draw errors. */
+        p8_log_ring("_init enter");
+        {
+            lua_getglobal(vm.L, "_init");
+            if (lua_isfunction(vm.L, -1)) {
+                if (lua_pcall(vm.L, 0, 0, 0) != LUA_OK) {
+                    const char *m = lua_tostring(vm.L, -1);
+                    char buf[160];
+                    snprintf(buf, sizeof(buf), "_init: %s",
+                             m ? m : "(no msg)");
+                    p8_log_to_file(buf);
+                    /* Show error and wait for MENU. */
+                    p8_machine_reset(&machine);
+                    p8_camera(&machine, 0, 0);
+                    p8_cls(&machine, 8);
+                    p8_font_draw(&machine, "_init error",       28,  4, 7);
+                    p8_font_draw(&machine, cart_entries[chosen].name,
+                                 4, 14, 7);
+                    int y = 28;
+                    int len = (int)strlen(buf);
+                    for (int s = 0; s < len && y < 110; s += 30) {
+                        char line[32] = {0};
+                        int chunk = (len - s > 30) ? 30 : (len - s);
+                        memcpy(line, buf + s, chunk);
+                        p8_font_draw(&machine, line, 2, y, 7);
+                        y += 8;
+                    }
+                    p8_font_draw(&machine, "MENU = picker", 20, 116, 10);
+                    p8_machine_present(&machine, scanline);
+                    p8_lcd_wait_idle();
+                    p8_lcd_present(scanline);
+                    while (!p8_buttons_menu_pressed()) sleep_ms(50);
+                    lua_pop(vm.L, 1);
+                    p8_cart_free(&cart);
+                    p8_vm_free(&vm);
+                    continue;
+                }
+            } else {
+                lua_pop(vm.L, 1);
+            }
+        }
+        p8_log_to_file("_init: ok");
+        p8_log_ring("_init ok");
 
         int has_update60 = 0;
         {
@@ -449,8 +551,12 @@ int main(void) {
             }
 
             /* Call _update / _draw with explicit error capture so
-             * any Lua runtime error gets surfaced to the user
-             * (instead of silently producing a black screen). */
+             * any Lua runtime error gets surfaced to the user.
+             * Each phase pushes a ring entry before AND after the
+             * call so a hardfault dump shows precisely which call
+             * was in flight. The "post" entry only lands if the
+             * call returned cleanly — its absence in the ring is
+             * the smoking gun for the faulting phase. */
             for (int phase = 0; phase < 2; phase++) {
                 const char *fn = (phase == 0) ? update_fn : "_draw";
                 lua_getglobal(vm.L, fn);
@@ -458,19 +564,32 @@ int main(void) {
                     lua_pop(vm.L, 1);
                     continue;
                 }
+                /* Periodic frame marker so the ring shows progress. */
+                if ((frame % 30) == 0 && phase == 0) {
+                    char tag[32];
+                    snprintf(tag, sizeof(tag), "frame %lu", (unsigned long)frame);
+                    p8_log_ring(tag);
+                }
+                p8_log_ring(phase == 0 ? "update enter" : "draw enter");
                 if (lua_pcall(vm.L, 0, 0, 0) != LUA_OK) {
                     const char *m = lua_tostring(vm.L, -1);
                     snprintf(err_msg, sizeof(err_msg),
                              "%s: %s", fn, m ? m : "(no msg)");
                     lua_pop(vm.L, 1);
-                    /* Persist for post-mortem inspection. */
+                    p8_log_ring("LUA ERROR");
                     p8_log_to_file(err_msg);
                     goto cart_error;
                 }
+                p8_log_ring(phase == 0 ? "update ok" : "draw ok");
             }
 
+            /* Audio scratch in BSS, NOT on the stack — at 2 KB it
+             * was eating into the 4 KB Pico SDK default stack and
+             * combined with deep Lua VM calls during _update/_draw
+             * was causing hard-to-diagnose stack-overflow hardfaults
+             * mid-game. */
+            static int16_t audio_buf[1024];
             int n = P8_AUDIO_SAMPLE_RATE / target_fps;
-            int16_t audio_buf[1024];
             if (n > 1024) n = 1024;
             p8_audio_render(audio_buf, n);
             p8_audio_pwm_push(audio_buf, n);

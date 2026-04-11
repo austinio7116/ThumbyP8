@@ -354,6 +354,11 @@ def write_label_bmp(out_path: Path, png_path: Path):
 # -----------------------------------------------------------------------
 _IF_DO_RE = re.compile(r'^(\s*if\b.*\S)\s+do(\s*)$', re.MULTILINE)
 
+# PICO-8 supports `//` as a single-line comment alternative to `--`.
+# Only when it appears at the start of a line (after whitespace);
+# `x // y` mid-expression remains Lua's integer divide.
+_LINE_COMMENT_SLASH_RE = re.compile(r'^(\s*)//', re.MULTILINE)
+
 # `?expr1,expr2,...` at the start of a line is PICO-8 shorthand
 # for `print(expr1,expr2,...)`. shrinko8 -U leaves it as-is.
 _PRINT_SHORTHAND_RE = re.compile(r'^(\s*)\?(.+)$', re.MULTILINE)
@@ -375,6 +380,210 @@ _GLYPH_SUBS = [
     # strip the variation selector that often follows the glyph
     (b'\xef\xb8\x8f', b''),                             # ︎  (U+FE0F)
 ]
+
+def _translate_string_content(src: str) -> str:
+    """
+    Walk source and rewrite the *content* of every string literal
+    so that Lua's lexer will accept it. Two transforms:
+
+    1. PICO-8 P8SCII escape sequences (`\\^`, `\\-`, `\\|`, `\\#`, `\\*`,
+       `\\+`, `\\.`, `\\:`) are not valid Lua escapes. Convert each
+       to a literal char escape `\\xHH` (the byte value of the symbol
+       itself), so the string parses and the bytes survive. The
+       cart's print() interpreter sees the literal symbol bytes
+       instead of the P8SCII control byte, so visual formatting
+       is degraded but text is readable.
+
+    2. Any byte >= 0x80 inside a string literal (e.g. UTF-8 multi-
+       byte sequences for special glyphs) is replaced with `\\xHH`.
+       Lua's lexer rejects raw high bytes inside `"..."` literals
+       in strict mode; the hex escape is always accepted.
+
+    3. Decimal escape `\\NNN` with NNN > 255 is rewritten to `\\x` +
+       the byte value modulo 256. Some carts have leftover
+       4-digit decimals from older PICO-8 versions.
+
+    Strings: handles `'...'`, `"..."`, and long brackets `[[...]]`
+    (which don't process escapes at all — passed through verbatim).
+    """
+    out = []
+    i = 0
+    n = len(src)
+
+    # Process raw bytes so we don't have to wrestle with Python's
+    # unicode handling for arbitrary cart byte sequences.
+    raw = src.encode('latin-1', errors='replace')
+
+    def emit(b):
+        out.append(b)
+
+    i = 0
+    n = len(raw)
+    while i < n:
+        c = raw[i:i+1]
+
+        # Line comment — passthrough until newline
+        if c == b'-' and i + 1 < n and raw[i+1:i+2] == b'-':
+            # Block comment?
+            if i + 3 < n and raw[i+2:i+4] == b'[[':
+                end = raw.find(b']]', i + 4)
+                if end < 0:
+                    out.append(raw[i:]); break
+                out.append(raw[i:end+2])
+                i = end + 2
+                continue
+            end = raw.find(b'\n', i)
+            if end < 0:
+                out.append(raw[i:]); break
+            out.append(raw[i:end])
+            i = end
+            continue
+
+        # Long bracket string — no escape processing
+        if c == b'[' and i + 1 < n and raw[i+1:i+2] == b'[':
+            end = raw.find(b']]', i + 2)
+            if end < 0:
+                out.append(raw[i:]); break
+            out.append(raw[i:end+2])
+            i = end + 2
+            continue
+
+        # Quoted string — content gets rewritten
+        if c == b'"' or c == b"'":
+            quote = c
+            out.append(quote)
+            i += 1
+            while i < n:
+                ch = raw[i:i+1]
+                if ch == quote:
+                    out.append(quote)
+                    i += 1
+                    break
+                if ch == b'\n':
+                    # Unterminated string — bail and let Lua complain
+                    break
+                if ch == b'\\' and i + 1 < n:
+                    nxt = raw[i+1:i+2]
+                    nb  = raw[i+1]
+                    # Lua-standard single-char escapes pass through
+                    if nxt in (b'a', b'b', b'f', b'n', b'r', b't',
+                                b'v', b'\\', b'"', b"'", b'\n', b'0',
+                                b'1', b'2', b'3', b'4', b'5', b'6',
+                                b'7', b'8', b'9', b'x', b'z'):
+                        # For decimal escapes, validate the value.
+                        if nxt.isdigit():
+                            # Read up to 3 digits
+                            j = i + 1
+                            digs = b''
+                            while j < n and len(digs) < 3 and raw[j:j+1].isdigit():
+                                digs += raw[j:j+1]
+                                j += 1
+                            v = int(digs)
+                            if v > 255:
+                                # Truncate to byte
+                                v = v & 0xff
+                                out.append(b'\\x' + ('%02x' % v).encode('ascii'))
+                            else:
+                                out.append(raw[i:j])
+                            i = j
+                            continue
+                        out.append(raw[i:i+2])
+                        i += 2
+                        continue
+                    # PICO-8 P8SCII escapes — convert to literal char
+                    out.append(b'\\x' + ('%02x' % nb).encode('ascii'))
+                    i += 2
+                    continue
+                # Raw high byte → hex escape
+                if raw[i] >= 0x80:
+                    out.append(b'\\x' + ('%02x' % raw[i]).encode('ascii'))
+                    i += 1
+                    continue
+                out.append(ch)
+                i += 1
+            continue
+
+        out.append(c)
+        i += 1
+
+    return b''.join(out).decode('latin-1')
+
+
+def _strip_code_highbytes(src: str) -> str:
+    """
+    Walk source and replace any UTF-8 multi-byte sequence (any
+    byte >= 0x80) in CODE state with `0`. PICO-8 source can use
+    special-character glyphs as inline integer constants (e.g.
+    `fillp(▒)` where `▒` is P8SCII byte 0x97 = 151). Lua's lexer
+    rejects raw high bytes outside strings entirely. Replacing
+    with `0` parses cleanly but loses the constant's value, so
+    fill patterns / glyph-driven logic will visually degrade.
+
+    Strings and comments are passed through unchanged — those are
+    handled by _translate_string_content.
+    """
+    raw = src.encode('latin-1', errors='replace')
+    out = bytearray()
+    i = 0
+    n = len(raw)
+    while i < n:
+        b = raw[i]
+        # Line comment: passthrough
+        if b == 0x2d and i + 1 < n and raw[i+1] == 0x2d:  # --
+            if i + 3 < n and raw[i+2] == 0x5b and raw[i+3] == 0x5b:  # --[[
+                end = raw.find(b']]', i + 4)
+                if end < 0:
+                    out += raw[i:]; break
+                out += raw[i:end+2]
+                i = end + 2
+                continue
+            end = raw.find(b'\n', i)
+            if end < 0:
+                out += raw[i:]; break
+            out += raw[i:end]
+            i = end
+            continue
+        # Long bracket string
+        if b == 0x5b and i + 1 < n and raw[i+1] == 0x5b:  # [[
+            end = raw.find(b']]', i + 2)
+            if end < 0:
+                out += raw[i:]; break
+            out += raw[i:end+2]
+            i = end + 2
+            continue
+        # Quoted string
+        if b == 0x22 or b == 0x27:                         # " or '
+            quote = b
+            out.append(b)
+            i += 1
+            while i < n:
+                if raw[i] == 0x5c and i + 1 < n:           # \
+                    out += raw[i:i+2]
+                    i += 2
+                    continue
+                if raw[i] == quote:
+                    out.append(quote)
+                    i += 1
+                    break
+                if raw[i] == 0x0a:
+                    break
+                out.append(raw[i])
+                i += 1
+            continue
+        # Code state: high byte → numeric 0
+        if b >= 0x80:
+            # Skip the entire UTF-8 sequence (1-4 bytes)
+            if   b < 0xc0: skip = 1
+            elif b < 0xe0: skip = 2
+            elif b < 0xf0: skip = 3
+            else:          skip = 4
+            out += b'0'
+            i += skip
+            continue
+        out.append(b)
+        i += 1
+    return out.decode('latin-1')
+
 
 def _translate_dialect_operators(src: str) -> str:
     """
@@ -444,6 +653,42 @@ def _translate_dialect_operators(src: str) -> str:
             continue
 
         # Code-state substitutions
+        # 0. PICO-8 binary literals: `0b1010`, `0b1010.1010` (fixed
+        #    point with 1/2-power fractional bits), and `_` digit
+        #    separators. Lua 5.4 has no binary literal syntax at all,
+        #    so emit a decimal value. Standard hex literals (`0x...`)
+        #    are passed through verbatim — Lua handles them.
+        if c == '0' and i + 1 < n and (src[i + 1] == 'b' or src[i + 1] == 'B'):
+            # Make sure the previous char isn't an identifier char,
+            # otherwise we might be inside a longer identifier name.
+            prev_id = i > 0 and (src[i - 1].isalnum() or src[i - 1] == '_')
+            if not prev_id:
+                j = i + 2
+                int_bits = []
+                while j < n and (src[j] in '01_'):
+                    if src[j] != '_':
+                        int_bits.append(src[j])
+                    j += 1
+                frac_bits = []
+                if j < n and src[j] == '.' and j + 1 < n and src[j + 1] in '01':
+                    j += 1
+                    while j < n and (src[j] in '01_'):
+                        if src[j] != '_':
+                            frac_bits.append(src[j])
+                        j += 1
+                if int_bits or frac_bits:
+                    int_val  = int(''.join(int_bits) or '0', 2)
+                    frac_val = 0.0
+                    if frac_bits:
+                        frac_val = sum(int(b) * (2.0 ** -(k + 1))
+                                       for k, b in enumerate(frac_bits))
+                    if frac_bits:
+                        out.append(repr(int_val + frac_val))
+                    else:
+                        out.append(str(int_val))
+                    i = j
+                    continue
+
         # 1. `\` integer divide → `//`. Make sure we don't grab a
         #    backslash that's part of an unrecognised escape inside a
         #    string — but we already handled strings above, so any
@@ -453,11 +698,26 @@ def _translate_dialect_operators(src: str) -> str:
             i += 1
             continue
 
-        # 2. `^^` XOR → `~` (Lua 5.4 bitwise XOR)
+        # 2. `^^` XOR → `~` (Lua 5.4 bitwise XOR).
+        # Don't touch `^^=` — that's PICO-8's XOR compound assign,
+        # left in place for the C-side compound rewriter to expand
+        # into `lhs = lhs ~ (rhs)`. Translating `^^` here would
+        # leave `~=` which Lua reads as "not equal".
         if c == '^' and i + 1 < n and src[i + 1] == '^':
+            if i + 2 < n and src[i + 2] == '=':
+                out.append('^^=')
+                i += 3
+                continue
             out.append('~')
             i += 2
             continue
+
+        # PICO-8 rotate / logical-shift operators (`>>>`, `<<>`,
+        # `>><`) need expression-level rewriting (LHS op RHS →
+        # func(LHS, RHS)), which a forward character scan can't do
+        # cleanly. Only rtype uses these in our test set, so
+        # they're queued for a future token-level pass and we just
+        # let the file fail to parse for now.
 
         # 3. `@expr` peek shorthand → `peek(expr)` for one byte. The
         #    expression is a simple primary: identifier, number, or
@@ -505,7 +765,11 @@ def post_fix_lua(text: str) -> str:
       - PICO-8 operators (\\ ^^ @ % $) → Lua equivalents
       - Unicode button glyph identifiers → numeric button indices
     """
-    # 1. if cond do → if cond then
+    # 1. PICO-8 `//` line comments → Lua `--` (only at start of
+    #    line; mid-expression `//` is Lua's integer divide).
+    text = _LINE_COMMENT_SLASH_RE.sub(lambda m: m.group(1) + '--', text)
+
+    # 2. if cond do → if cond then
     def _if_do_sub(m):
         return f"{m.group(1)} then{m.group(2)}"
     text = _IF_DO_RE.sub(_if_do_sub, text)
@@ -515,14 +779,25 @@ def post_fix_lua(text: str) -> str:
         return f"{m.group(1)}print({m.group(2)})"
     text = _PRINT_SHORTHAND_RE.sub(_print_sub, text)
 
-    # 3. PICO-8-only operators → Lua equivalents
-    text = _translate_dialect_operators(text)
-
-    # 4. UTF-8 button glyphs → numeric indices
+    # 3. UTF-8 button glyphs → numeric indices (must run BEFORE
+    #    string content translation, so the in-code identifier
+    #    glyphs get rewritten before we touch any string contents).
     raw = text.encode('latin-1', errors='replace')
     for needle, replacement in _GLYPH_SUBS:
         raw = raw.replace(needle, replacement)
     text = raw.decode('latin-1')
+
+    # 4. PICO-8-only operators → Lua equivalents
+    text = _translate_dialect_operators(text)
+
+    # 5. String literal contents — convert P8SCII escapes and high
+    #    bytes to \xHH so Lua's lexer accepts them
+    text = _translate_string_content(text)
+
+    # 6. Any high-byte UTF-8 sequence still in CODE positions
+    #    becomes the number 0 — see _strip_code_highbytes for the
+    #    rationale and limitations.
+    text = _strip_code_highbytes(text)
 
     return text
 

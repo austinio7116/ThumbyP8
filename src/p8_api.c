@@ -16,10 +16,22 @@
 #include "p8_font.h"
 #include "p8_audio.h"
 
+/* Optional binding-call trace hook. NULL by default; the device
+ * firmware sets this to p8_log_ring at boot so a hardfault dump
+ * shows the last binding called. The TRACE macro is used inside
+ * suspect bindings (drawing / audio / memory) to write their name
+ * to the hook. Hot-path bindings (math, button reads, table ops)
+ * are deliberately NOT traced — they fire too often to be useful
+ * and would just spam the ring. */
+
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+void (*p8_trace_hook)(const char *name) = NULL;
+#define TRACE(name) do { if (p8_trace_hook) p8_trace_hook(name); } while (0)
 
 /* Registry keys — addresses of these statics are unique cookies. */
 static const char k_machine_key = 0;
@@ -62,10 +74,12 @@ static lua_Number argn0(lua_State *L, int idx) {
 /* --- drawing primitives --------------------------------------------- */
 
 static int l_cls(lua_State *L) {
+    TRACE("cls");
     p8_cls(get_machine(L), argi(L, 1, 0));
     return 0;
 }
 static int l_pset(lua_State *L) {
+    TRACE("pset");
     p8_machine *m = get_machine(L);
     int x = argi(L, 1, 0);
     int y = argi(L, 2, 0);
@@ -74,25 +88,30 @@ static int l_pset(lua_State *L) {
     return 0;
 }
 static int l_pget(lua_State *L) {
+    TRACE("pget");
     int v = p8_pget(get_machine(L), argi(L, 1, 0), argi(L, 2, 0));
     lua_pushinteger(L, v);
     return 1;
 }
 static int l_color(lua_State *L) {
+    TRACE("color");
     p8_color(get_machine(L), argi(L, 1, 6));
     return 0;
 }
 static int l_camera(lua_State *L) {
+    TRACE("camera");
     p8_camera(get_machine(L), argi(L, 1, 0), argi(L, 2, 0));
     return 0;
 }
 static int l_clip(lua_State *L) {
+    TRACE("clip");
     p8_machine *m = get_machine(L);
     if (lua_gettop(L) == 0) { p8_clip(m, 0, 0, 0, 0, 1); return 0; }
     p8_clip(m, argi(L, 1, 0), argi(L, 2, 0), argi(L, 3, 128), argi(L, 4, 128), 0);
     return 0;
 }
 static int l_line(lua_State *L) {
+    TRACE("line");
     p8_machine *m = get_machine(L);
     int x0 = argi(L, 1, 0);
     int y0 = argi(L, 2, 0);
@@ -103,6 +122,7 @@ static int l_line(lua_State *L) {
     return 0;
 }
 static int l_rect(lua_State *L) {
+    TRACE("rect");
     p8_machine *m = get_machine(L);
     p8_rect(m, argi(L, 1, 0), argi(L, 2, 0),
                argi(L, 3, 0), argi(L, 4, 0),
@@ -110,6 +130,7 @@ static int l_rect(lua_State *L) {
     return 0;
 }
 static int l_rectfill(lua_State *L) {
+    TRACE("rectfill");
     p8_machine *m = get_machine(L);
     p8_rectfill(m, argi(L, 1, 0), argi(L, 2, 0),
                    argi(L, 3, 0), argi(L, 4, 0),
@@ -117,12 +138,14 @@ static int l_rectfill(lua_State *L) {
     return 0;
 }
 static int l_circ(lua_State *L) {
+    TRACE("circ");
     p8_machine *m = get_machine(L);
     p8_circ(m, argi(L, 1, 0), argi(L, 2, 0),
                argi(L, 3, 4), argi(L, 4, p8_pen(m)));
     return 0;
 }
 static int l_circfill(lua_State *L) {
+    TRACE("circfill");
     p8_machine *m = get_machine(L);
     p8_circfill(m, argi(L, 1, 0), argi(L, 2, 0),
                    argi(L, 3, 4), argi(L, 4, p8_pen(m)));
@@ -130,6 +153,7 @@ static int l_circfill(lua_State *L) {
 }
 
 static int l_pal(lua_State *L) {
+    TRACE("pal");
     p8_machine *m = get_machine(L);
     if (lua_gettop(L) == 0) { p8_pal_reset(m); return 0; }
     int c0 = argi(L, 1, 0);
@@ -139,6 +163,7 @@ static int l_pal(lua_State *L) {
     return 0;
 }
 static int l_palt(lua_State *L) {
+    TRACE("palt");
     p8_machine *m = get_machine(L);
     if (lua_gettop(L) == 0) {
         /* reset transparency: only color 0 transparent */
@@ -157,6 +182,7 @@ static int l_palt(lua_State *L) {
 /* --- sprites + map --------------------------------------------------- */
 
 static int l_spr(lua_State *L) {
+    TRACE("spr");
     p8_machine *m = get_machine(L);
     int n  = argi(L, 1, 0);
     int x  = argi(L, 2, 0);
@@ -169,6 +195,7 @@ static int l_spr(lua_State *L) {
     return 0;
 }
 static int l_sspr(lua_State *L) {
+    TRACE("sspr");
     p8_machine *m = get_machine(L);
     int sx = argi(L, 1, 0);
     int sy = argi(L, 2, 0);
@@ -184,6 +211,7 @@ static int l_sspr(lua_State *L) {
     return 0;
 }
 static int l_map(lua_State *L) {
+    TRACE("map");
     p8_machine *m = get_machine(L);
     int cx = argi(L, 1, 0);
     int cy = argi(L, 2, 0);
@@ -196,14 +224,17 @@ static int l_map(lua_State *L) {
     return 0;
 }
 static int l_mget(lua_State *L) {
+    TRACE("mget");
     lua_pushinteger(L, p8_mget(get_machine(L), argi(L, 1, 0), argi(L, 2, 0)));
     return 1;
 }
 static int l_mset(lua_State *L) {
+    TRACE("mset");
     p8_mset(get_machine(L), argi(L, 1, 0), argi(L, 2, 0), argi(L, 3, 0));
     return 0;
 }
 static int l_fget(lua_State *L) {
+    TRACE("fget");
     p8_machine *m = get_machine(L);
     int n = argi(L, 1, 0);
     if (lua_isnoneornil(L, 2)) {
@@ -214,6 +245,7 @@ static int l_fget(lua_State *L) {
     return 1;
 }
 static int l_fset(lua_State *L) {
+    TRACE("fset");
     p8_machine *m = get_machine(L);
     int n = argi(L, 1, 0);
     if (lua_isboolean(L, 2)) {
@@ -228,10 +260,12 @@ static int l_fset(lua_State *L) {
     return 0;
 }
 static int l_sget(lua_State *L) {
+    TRACE("sget");
     lua_pushinteger(L, p8_sget(get_machine(L), argi(L, 1, 0), argi(L, 2, 0)));
     return 1;
 }
 static int l_sset(lua_State *L) {
+    TRACE("sset");
     p8_machine *m = get_machine(L);
     p8_sset(m, argi(L, 1, 0), argi(L, 2, 0), argi(L, 3, p8_pen(m)));
     return 0;
@@ -240,6 +274,7 @@ static int l_sset(lua_State *L) {
 /* --- input ----------------------------------------------------------- */
 
 static int l_btn(lua_State *L) {
+    TRACE("btn");
     if (lua_isnoneornil(L, 1)) {
         lua_pushinteger(L, get_input(L)->cur);
         return 1;
@@ -248,6 +283,7 @@ static int l_btn(lua_State *L) {
     return 1;
 }
 static int l_btnp(lua_State *L) {
+    TRACE("btnp");
     if (lua_isnoneornil(L, 1)) {
         p8_input *in = get_input(L);
         lua_pushinteger(L, in->cur & ~in->prev);
@@ -262,14 +298,17 @@ static int l_btnp(lua_State *L) {
  * libm. atan2 also returns turns and is anticlockwise in screenspace. */
 
 static int l_p8_sin(lua_State *L) {
+    TRACE("sin");
     lua_pushnumber(L, -sin(argn0(L, 1) * 2.0 * M_PI));
     return 1;
 }
 static int l_p8_cos(lua_State *L) {
+    TRACE("cos");
     lua_pushnumber(L, cos(argn0(L, 1) * 2.0 * M_PI));
     return 1;
 }
 static int l_p8_atan2(lua_State *L) {
+    TRACE("atan2");
     lua_Number dx = argn0(L, 1);
     lua_Number dy = argn0(L, 2);
     if (dx == 0 && dy == 0) { lua_pushnumber(L, 0.25); return 1; }
@@ -279,22 +318,25 @@ static int l_p8_atan2(lua_State *L) {
     lua_pushnumber(L, a);
     return 1;
 }
-static int l_p8_flr(lua_State *L)  { lua_pushnumber(L, floor(argn0(L, 1))); return 1; }
-static int l_p8_ceil(lua_State *L) { lua_pushnumber(L, ceil(argn0(L, 1)));  return 1; }
-static int l_p8_abs(lua_State *L)  { lua_pushnumber(L, fabs(argn0(L, 1)));  return 1; }
+static int l_p8_flr(lua_State *L)  { TRACE("flr");  lua_pushnumber(L, floor(argn0(L, 1))); return 1; }
+static int l_p8_ceil(lua_State *L) { TRACE("ceil"); lua_pushnumber(L, ceil(argn0(L, 1)));  return 1; }
+static int l_p8_abs(lua_State *L)  { TRACE("abs");  lua_pushnumber(L, fabs(argn0(L, 1)));  return 1; }
 static int l_p8_min(lua_State *L) {
+    TRACE("min");
     lua_Number a = argn0(L, 1);
     lua_Number b = argn0(L, 2);
     lua_pushnumber(L, a < b ? a : b);
     return 1;
 }
 static int l_p8_max(lua_State *L) {
+    TRACE("max");
     lua_Number a = argn0(L, 1);
     lua_Number b = argn0(L, 2);
     lua_pushnumber(L, a > b ? a : b);
     return 1;
 }
 static int l_p8_mid(lua_State *L) {
+    TRACE("mid");
     lua_Number a = argn0(L, 1);
     lua_Number b = argn0(L, 2);
     lua_Number c = argn0(L, 3);
@@ -306,6 +348,7 @@ static int l_p8_mid(lua_State *L) {
     return 1;
 }
 static int l_p8_rnd(lua_State *L) {
+    TRACE("rnd");
     /* No 1st arg → 0..1; numeric arg → 0..arg; table → random element */
     if (lua_isnoneornil(L, 1)) {
         lua_pushnumber(L, (lua_Number)rand() / (lua_Number)RAND_MAX);
@@ -323,18 +366,33 @@ static int l_p8_rnd(lua_State *L) {
     return 1;
 }
 static int l_p8_srand(lua_State *L) {
-    srand((unsigned)luaL_checknumber(L, 1));
+    TRACE("srand");
+    /* PICO-8 srand() with no arg reseeds from the system frame
+     * counter (effectively "time-based"). With an arg it sets a
+     * deterministic seed. */
+    if (lua_isnoneornil(L, 1)) {
+        p8_machine *m = get_machine(L);
+        uint32_t fc = (uint32_t)m->mem[P8_DRAWSTATE + 0x34]
+                    | ((uint32_t)m->mem[P8_DRAWSTATE + 0x35] << 8)
+                    | ((uint32_t)m->mem[P8_DRAWSTATE + 0x36] << 16)
+                    | ((uint32_t)m->mem[P8_DRAWSTATE + 0x37] << 24);
+        srand(fc ? fc : 1);
+    } else {
+        srand((unsigned)argn0(L, 1));
+    }
     return 0;
 }
 
 /* sgn(x) → -1 if x<0, +1 otherwise (PICO-8: sgn(0) = 1). */
 static int l_p8_sgn(lua_State *L) {
+    TRACE("sgn");
     lua_Number x = argn0(L, 1);
     lua_pushnumber(L, x < 0 ? -1 : 1);
     return 1;
 }
 
 static int l_p8_sqrt(lua_State *L) {
+    TRACE("sqrt");
     lua_Number x = argn0(L, 1);
     lua_pushnumber(L, x < 0 ? 0 : sqrt(x));
     return 1;
@@ -343,12 +401,14 @@ static int l_p8_sqrt(lua_State *L) {
 /* PICO-8 pre-0.2 bitwise functions (now usually expressed as << >>
  * & | ~ in newer carts, but old carts still call these by name). */
 static int l_p8_shl(lua_State *L) {
+    TRACE("shl");
     int x = (int)argn0(L, 1);
     int n = (int)argn0(L, 2);
     lua_pushinteger(L, ((unsigned)x) << (n & 31));
     return 1;
 }
 static int l_p8_shr(lua_State *L) {
+    TRACE("shr");
     int x = (int)argn0(L, 1);
     int n = (int)argn0(L, 2);
     /* Arithmetic right shift to match PICO-8's signed semantics. */
@@ -356,37 +416,103 @@ static int l_p8_shr(lua_State *L) {
     return 1;
 }
 static int l_p8_lshr(lua_State *L) {
+    TRACE("lshr");
     unsigned x = (unsigned)argn0(L, 1);
     int n = (int)argn0(L, 2);
     lua_pushinteger(L, x >> (n & 31));
     return 1;
 }
 static int l_p8_band(lua_State *L) {
+    TRACE("band");
     int a = (int)argn0(L, 1);
     int b = (int)argn0(L, 2);
     lua_pushinteger(L, a & b);
     return 1;
 }
 static int l_p8_bor(lua_State *L) {
+    TRACE("bor");
     int a = (int)argn0(L, 1);
     int b = (int)argn0(L, 2);
     lua_pushinteger(L, a | b);
     return 1;
 }
 static int l_p8_bxor(lua_State *L) {
+    TRACE("bxor");
     int a = (int)argn0(L, 1);
     int b = (int)argn0(L, 2);
     lua_pushinteger(L, a ^ b);
     return 1;
 }
 static int l_p8_bnot(lua_State *L) {
+    TRACE("bnot");
     int a = (int)argn0(L, 1);
     lua_pushinteger(L, ~a);
     return 1;
 }
 
+/* split(str, [sep], [convert_numbers]) → table of substrings.
+ *
+ * PICO-8: split("1,2,3", ",") → {1, 2, 3}.  Default sep is ",".
+ * Default convert_numbers is true; numeric-looking pieces get
+ * pushed as numbers, everything else as strings. Empty input
+ * returns an empty table. A single-character separator is the
+ * common case; multi-char and whitespace separators rarely matter
+ * for cart code. We support either. */
+static int l_p8_split(lua_State *L) {
+    TRACE("split");
+    if (lua_isnoneornil(L, 1)) { lua_newtable(L); return 1; }
+    size_t slen;
+    const char *s = lua_tolstring(L, 1, &slen);
+    if (!s) { lua_newtable(L); return 1; }
+
+    const char *sep = ",";
+    size_t seplen = 1;
+    if (!lua_isnoneornil(L, 2)) {
+        sep = lua_tolstring(L, 2, &seplen);
+        if (!sep) { sep = ","; seplen = 1; }
+    }
+
+    int convert = 1;
+    if (lua_isboolean(L, 3)) convert = lua_toboolean(L, 3);
+
+    lua_newtable(L);
+    int idx = 1;
+    size_t i = 0;
+    while (i <= slen) {
+        size_t j = i;
+        if (seplen == 0) {
+            /* Empty separator: split into individual characters. */
+            if (i >= slen) break;
+            j = i + 1;
+        } else {
+            while (j + seplen <= slen && memcmp(s + j, sep, seplen) != 0) j++;
+        }
+        /* Push the slice [i..j) as a value into the table. */
+        if (convert) {
+            char *end;
+            double v = strtod(s + i, &end);
+            if (end == s + j && j > i) {
+                lua_pushnumber(L, v);
+            } else {
+                lua_pushlstring(L, s + i, j - i);
+            }
+        } else {
+            lua_pushlstring(L, s + i, j - i);
+        }
+        lua_seti(L, -2, idx++);
+        if (seplen == 0) {
+            i = j;
+        } else {
+            if (j + seplen > slen) break;
+            i = j + seplen;
+        }
+    }
+    return 1;
+}
+
 /* ord(s, [i]) → byte value of s[i] (1-indexed). chr(n) → 1-byte string. */
 static int l_p8_ord(lua_State *L) {
+    TRACE("ord");
     size_t L_str = 0;
     const char *s = luaL_checklstring(L, 1, &L_str);
     int i = lua_isnoneornil(L, 2) ? 1 : (int)luaL_checknumber(L, 2);
@@ -395,6 +521,7 @@ static int l_p8_ord(lua_State *L) {
     return 1;
 }
 static int l_p8_chr(lua_State *L) {
+    TRACE("chr");
     int n = (int)luaL_checknumber(L, 1);
     char buf[2] = { (char)(n & 0xff), 0 };
     lua_pushlstring(L, buf, 1);
@@ -403,6 +530,7 @@ static int l_p8_chr(lua_State *L) {
 
 /* --- memory peek/poke ------------------------------------------------- */
 static int l_peek(lua_State *L) {
+    TRACE("peek");
     p8_machine *m = get_machine(L);
     int addr = argi(L, 1, 0);
     if ((unsigned)addr >= P8_MEM_SIZE) { lua_pushinteger(L, 0); return 1; }
@@ -410,11 +538,204 @@ static int l_peek(lua_State *L) {
     return 1;
 }
 static int l_poke(lua_State *L) {
+    TRACE("poke");
     p8_machine *m = get_machine(L);
     int addr = argi(L, 1, 0);
     int val  = argi(L, 2, 0);
     if ((unsigned)addr < P8_MEM_SIZE) m->mem[addr] = (uint8_t)(val & 0xff);
     return 0;
+}
+
+/* peek2/poke2 — 16-bit little-endian access. */
+static int l_peek2(lua_State *L) {
+    TRACE("peek2");
+    p8_machine *m = get_machine(L);
+    int addr = argi(L, 1, 0);
+    if (addr < 0 || addr + 1 >= P8_MEM_SIZE) {
+        lua_pushinteger(L, 0); return 1;
+    }
+    int v = m->mem[addr] | (m->mem[addr + 1] << 8);
+    /* sign-extend 16-bit (PICO-8 numbers are signed) */
+    if (v & 0x8000) v |= ~0xffff;
+    lua_pushinteger(L, v);
+    return 1;
+}
+static int l_poke2(lua_State *L) {
+    TRACE("poke2");
+    p8_machine *m = get_machine(L);
+    int addr = argi(L, 1, 0);
+    int val  = argi(L, 2, 0);
+    if (addr < 0 || addr + 1 >= P8_MEM_SIZE) return 0;
+    m->mem[addr]     = (uint8_t)(val & 0xff);
+    m->mem[addr + 1] = (uint8_t)((val >> 8) & 0xff);
+    return 0;
+}
+
+/* peek4/poke4 — 32-bit little-endian access. */
+static int l_peek4(lua_State *L) {
+    TRACE("peek4");
+    p8_machine *m = get_machine(L);
+    int addr = argi(L, 1, 0);
+    if (addr < 0 || addr + 3 >= P8_MEM_SIZE) {
+        lua_pushinteger(L, 0); return 1;
+    }
+    uint32_t v = (uint32_t)m->mem[addr]
+               | ((uint32_t)m->mem[addr + 1] << 8)
+               | ((uint32_t)m->mem[addr + 2] << 16)
+               | ((uint32_t)m->mem[addr + 3] << 24);
+    lua_pushinteger(L, (int32_t)v);
+    return 1;
+}
+static int l_poke4(lua_State *L) {
+    TRACE("poke4");
+    p8_machine *m = get_machine(L);
+    int addr = argi(L, 1, 0);
+    int val  = argi(L, 2, 0);
+    if (addr < 0 || addr + 3 >= P8_MEM_SIZE) return 0;
+    m->mem[addr]     = (uint8_t)(val & 0xff);
+    m->mem[addr + 1] = (uint8_t)((val >> 8) & 0xff);
+    m->mem[addr + 2] = (uint8_t)((val >> 16) & 0xff);
+    m->mem[addr + 3] = (uint8_t)((val >> 24) & 0xff);
+    return 0;
+}
+
+/* fillp(pat) — set the fill pattern for primitives. We don't yet
+ * implement fill patterns in the rasteriser, so this is a no-op
+ * stub that prevents crashes. Real fillp support is a Phase 8
+ * task — most carts that use it look acceptable without it. */
+static int l_p8_fillp(lua_State *L) { TRACE("fillp"); (void)L; return 0; }
+
+/* flip() — explicit framebuffer flip. We always present once per
+ * frame, so this is a no-op stub. */
+static int l_p8_flip(lua_State *L)  { TRACE("flip");  (void)L; return 0; }
+
+/* deli(t, [i]) — delete by index. Default i = #t (delete last). */
+static int l_p8_deli(lua_State *L) {
+    TRACE("deli");
+    if (!lua_istable(L, 1)) { lua_pushnil(L); return 1; }
+    lua_Integer len = luaL_len(L, 1);
+    lua_Integer i = lua_isnoneornil(L, 2) ? len : (lua_Integer)argi(L, 2, (int)len);
+    if (i < 1 || i > len) { lua_pushnil(L); return 1; }
+    lua_geti(L, 1, i);   /* return value */
+    /* shift down */
+    for (lua_Integer j = i; j < len; j++) {
+        lua_geti(L, 1, j + 1);
+        lua_seti(L, 1, j);
+    }
+    lua_pushnil(L);
+    lua_seti(L, 1, len);
+    return 1;
+}
+
+/* oval / ovalfill — axis-aligned ellipse outline / fill drawn into
+ * the framebuffer. Used by a fair few carts; midpoint algorithm. */
+static int l_p8_oval(lua_State *L) {
+    TRACE("oval");
+    p8_machine *m = get_machine(L);
+    int x0 = argi(L, 1, 0), y0 = argi(L, 2, 0);
+    int x1 = argi(L, 3, 0), y1 = argi(L, 4, 0);
+    int c  = argi(L, 5, p8_pen(m));
+    if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
+    if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
+    int rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
+    int cx = x0 + rx,        cy = y0 + ry;
+    if (rx < 0 || ry < 0) return 0;
+    /* Crude midpoint ellipse — good enough for most carts. */
+    for (int t = 0; t < 360; t += 2) {
+        double a = t * (3.14159265 / 180.0);
+        int px = cx + (int)(rx * cos(a) + 0.5);
+        int py = cy + (int)(ry * sin(a) + 0.5);
+        p8_pset(m, px, py, c);
+    }
+    return 0;
+}
+static int l_p8_ovalfill(lua_State *L) {
+    TRACE("ovalfill");
+    p8_machine *m = get_machine(L);
+    int x0 = argi(L, 1, 0), y0 = argi(L, 2, 0);
+    int x1 = argi(L, 3, 0), y1 = argi(L, 4, 0);
+    int c  = argi(L, 5, p8_pen(m));
+    if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
+    if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
+    int rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
+    int cx = x0 + rx,        cy = y0 + ry;
+    if (rx < 0 || ry < 0) return 0;
+    /* Scanline fill via midpoint formula. */
+    for (int dy = -ry; dy <= ry; dy++) {
+        if (ry == 0) continue;
+        double r2 = 1.0 - (double)(dy * dy) / (double)(ry * ry);
+        if (r2 < 0) continue;
+        int dx = (int)(rx * sqrt(r2) + 0.5);
+        for (int x = cx - dx; x <= cx + dx; x++) {
+            p8_pset(m, x, cy + dy, c);
+        }
+    }
+    return 0;
+}
+
+/* tline — textured line, used by mode-7 / floor effects. Stub for
+ * now (returns nothing). Carts that depend on it for gameplay will
+ * look wrong but won't crash. */
+static int l_p8_tline(lua_State *L)    { TRACE("tline");    (void)L; return 0; }
+
+/* mapdraw — alias for map (older PICO-8 API name). */
+/* Already covered by the map binding; alias entry below. */
+
+/* PICO-8 host-control stubs. None of these apply to a single-cart
+ * embedded device; they exist so carts that call them don't crash. */
+static int l_p8_extcmd(lua_State *L)   { TRACE("extcmd");   (void)L; return 0; }
+static int l_p8_cstore(lua_State *L)   { TRACE("cstore");   (void)L; return 0; }
+static int l_p8_serial(lua_State *L)   { TRACE("serial");   (void)L; return 0; }
+static int l_p8_stop  (lua_State *L)   { TRACE("stop");     (void)L; return 0; }
+static int l_p8_run   (lua_State *L)   { TRACE("run");      (void)L; return 0; }
+static int l_p8_reset (lua_State *L)   { TRACE("reset");    (void)L; return 0; }
+static int l_p8_ls    (lua_State *L)   { TRACE("ls");       (void)L; lua_newtable(L); return 1; }
+static int l_p8_holdframe(lua_State *L){ TRACE("holdframe");(void)L; return 0; }
+static int l_p8_set_fps(lua_State *L)  { TRACE("set_fps");  (void)L; return 0; }
+
+/* Bitwise rotation helpers (PICO-8 pre-0.2 API). */
+static int l_p8_rotl(lua_State *L) {
+    TRACE("rotl");
+    uint32_t x = (uint32_t)argn0(L, 1);
+    int n = (int)argn0(L, 2) & 31;
+    lua_pushinteger(L, (int32_t)((x << n) | (x >> (32 - n))));
+    return 1;
+}
+static int l_p8_rotr(lua_State *L) {
+    TRACE("rotr");
+    uint32_t x = (uint32_t)argn0(L, 1);
+    int n = (int)argn0(L, 2) & 31;
+    lua_pushinteger(L, (int32_t)((x >> n) | (x << (32 - n))));
+    return 1;
+}
+
+/* pack(...) — table.pack alias as a global. */
+static int l_p8_pack(lua_State *L) {
+    TRACE("pack");
+    int n = lua_gettop(L);
+    lua_createtable(L, n, 1);
+    for (int i = 1; i <= n; i++) {
+        lua_pushvalue(L, i);
+        lua_seti(L, -2, i);
+    }
+    lua_pushinteger(L, n);
+    lua_setfield(L, -2, "n");
+    return 1;
+}
+
+/* unpack(t, [i], [j]) — PICO-8 exposes table.unpack as a global. */
+static int l_p8_unpack(lua_State *L) {
+    TRACE("unpack");
+    if (!lua_istable(L, 1)) return 0;
+    int i = lua_isnoneornil(L, 2) ? 1 : argi(L, 2, 1);
+    int j = lua_isnoneornil(L, 3) ? (int)luaL_len(L, 1) : argi(L, 3, 0);
+    int n = j - i + 1;
+    if (n <= 0) return 0;
+    luaL_checkstack(L, n, "too many results to unpack");
+    for (int k = 0; k < n; k++) {
+        lua_geti(L, 1, i + k);
+    }
+    return n;
 }
 
 /* --- print(str, [x, y, [col]]) -------------------------------------- */
@@ -430,6 +751,7 @@ static int l_poke(lua_State *L) {
  * The cursor lives at draw-state offsets 0x26 (x) and 0x27 (y),
  * which we already reserved in p8_machine.h. */
 static int l_print(lua_State *L) {
+    TRACE("print");
     p8_machine *m = get_machine(L);
     const char *s = luaL_optstring(L, 1, "");
     int has_xy = !lua_isnoneornil(L, 2) && !lua_isnoneornil(L, 3);
@@ -463,6 +785,7 @@ static int l_print(lua_State *L) {
 
 /* cursor(x, y, [col]) — set the print cursor and optionally pen. */
 static int l_cursor(lua_State *L) {
+    TRACE("cursor");
     p8_machine *m = get_machine(L);
     int x = argi(L, 1, 0);
     int y = argi(L, 2, 0);
@@ -476,6 +799,7 @@ static int l_cursor(lua_State *L) {
 /* t() / time() return seconds since program start. We piggyback on
  * a counter the host runner increments each frame. */
 static int l_p8_time(lua_State *L) {
+    TRACE("time");
     p8_machine *m = get_machine(L);
     /* Stash frame count in unused draw-state word 0x5f30..0x5f33 as
      * a uint32; host runner writes it each frame. */
@@ -491,6 +815,7 @@ static int l_p8_time(lua_State *L) {
 /* sub(s, i, [j]) — 1-indexed, supports negatives. PICO-8 semantics
  * match Lua's string.sub exactly, so we just route there. */
 static int l_p8_sub(lua_State *L) {
+    TRACE("sub");
     lua_getglobal(L, "string");
     lua_getfield(L, -1, "sub");
     lua_remove(L, -2);
@@ -501,6 +826,7 @@ static int l_p8_sub(lua_State *L) {
 
 /* tostr(v, hex) / tonum(s) */
 static int l_p8_tostr(lua_State *L) {
+    TRACE("tostr");
     if (lua_isnoneornil(L, 1)) { lua_pushstring(L, ""); return 1; }
     if (lua_isnumber(L, 1)) {
         char buf[32];
@@ -522,8 +848,16 @@ static int l_p8_tostr(lua_State *L) {
     return 1;
 }
 static int l_p8_tonum(lua_State *L) {
-    if (lua_isnumber(L, 1)) { lua_pushvalue(L, 1); return 1; }
-    const char *s = luaL_checkstring(L, 1);
+    TRACE("tonum");
+    /* PICO-8 tonum is lenient: nil → nil, bool → nil, numbers
+     * pass through, strings get parsed (returning nil if not
+     * parseable). NEVER errors. Real carts call this on
+     * arbitrary inputs and expect a graceful nil back. */
+    if (lua_isnoneornil(L, 1)) { lua_pushnil(L); return 1; }
+    if (lua_isnumber(L, 1))     { lua_pushvalue(L, 1); return 1; }
+    if (lua_isboolean(L, 1))    { lua_pushnil(L); return 1; }
+    const char *s = lua_tostring(L, 1);
+    if (!s) { lua_pushnil(L); return 1; }
     char *end;
     double v = strtod(s, &end);
     if (end == s) { lua_pushnil(L); return 1; }
@@ -537,6 +871,7 @@ static int l_p8_tonum(lua_State *L) {
  *   n=-1 stops the channel; n=-2 stops sfx playing on the channel
  *   without disturbing the music slot. We treat both as stop. */
 static int l_p8_sfx(lua_State *L) {
+    TRACE("sfx");
     int n      = argi(L, 1, -1);
     int chan   = lua_isnoneornil(L, 2) ? -1 : argi(L, 2, -1);
     int offset = argi(L, 3, 0);
@@ -548,6 +883,7 @@ static int l_p8_sfx(lua_State *L) {
 /* music(n, [fade_len], [channel_mask])
  *   n=-1 stops music. */
 static int l_p8_music(lua_State *L) {
+    TRACE("music");
     int n          = argi(L, 1, -1);
     int fade_len   = argi(L, 2, 0);
     int chan_mask  = argi(L, 3, 0);
@@ -558,6 +894,7 @@ static int l_p8_music(lua_State *L) {
 /* stat(n) — partial PICO-8 surface. The synth-related queries
  * (16..23) come from p8_audio_stat(); other ids return 0. */
 static int l_p8_stat(lua_State *L) {
+    TRACE("stat");
     int n = argi(L, 1, 0);
     if (n >= 16 && n <= 23) {
         lua_pushinteger(L, p8_audio_stat(n));
@@ -569,6 +906,7 @@ static int l_p8_stat(lua_State *L) {
 
 /* printh — PICO-8 debug print, routes to stdout. */
 static int l_p8_printh(lua_State *L) {
+    TRACE("printh");
     const char *s = luaL_optstring(L, 1, "");
     fputs(s, stdout);
     fputc('\n', stdout);
@@ -576,10 +914,10 @@ static int l_p8_printh(lua_State *L) {
 }
 
 /* menuitem, cartdata, dget, dset — stubs. */
-static int l_p8_menuitem(lua_State *L) { (void)L; return 0; }
-static int l_p8_cartdata(lua_State *L) { (void)L; return 0; }
-static int l_p8_dget(lua_State *L)     { lua_pushinteger(L, 0); return 1; }
-static int l_p8_dset(lua_State *L)     { (void)L; return 0; }
+static int l_p8_menuitem(lua_State *L) { TRACE("menuitem"); (void)L; return 0; }
+static int l_p8_cartdata(lua_State *L) { TRACE("cartdata"); (void)L; return 0; }
+static int l_p8_dget(lua_State *L)     { TRACE("dget"); lua_pushinteger(L, 0); return 1; }
+static int l_p8_dset(lua_State *L)     { TRACE("dset"); (void)L; return 0; }
 
 /* reload(dest_addr, src_addr, len, [filename]) — copy bytes from
  * the cart's read-only ROM image into runtime memory. Real PICO-8
@@ -591,6 +929,7 @@ static int l_p8_dset(lua_State *L)     { (void)L; return 0; }
  * does so explicitly. A no-op stub is correct for the vast
  * majority of carts. */
 static int l_p8_reload(lua_State *L) {
+    TRACE("reload");
     (void)L;
     return 0;
 }
@@ -598,6 +937,7 @@ static int l_p8_reload(lua_State *L) {
 /* memcpy(dest, src, len) — copy bytes within machine memory. PICO-8
  * carts use this for cheap blitting and animation tricks. */
 static int l_p8_memcpy(lua_State *L) {
+    TRACE("memcpy");
     p8_machine *m = get_machine(L);
     int dest = argi(L, 1, 0);
     int src  = argi(L, 2, 0);
@@ -613,6 +953,7 @@ static int l_p8_memcpy(lua_State *L) {
 
 /* memset(dest, val, len) — fill bytes in machine memory. */
 static int l_p8_memset(lua_State *L) {
+    TRACE("memset");
     p8_machine *m = get_machine(L);
     int dest = argi(L, 1, 0);
     int val  = argi(L, 2, 0);
@@ -660,6 +1001,7 @@ static int all_iter(lua_State *L) {
     return 0;  /* exhausted */
 }
 static int l_p8_all(lua_State *L) {
+    TRACE("all");
     if (lua_isnoneornil(L, 1) || !lua_istable(L, 1)) {
         lua_newtable(L);
         lua_pushinteger(L, 0);
@@ -680,6 +1022,7 @@ static int l_p8_all(lua_State *L) {
  * before the table has been initialised; PICO-8 just returns nil,
  * Lua's strict luaL_checktype errors. We match PICO-8 here. */
 static int l_add(lua_State *L) {
+    TRACE("add");
     if (!lua_istable(L, 1)) { lua_pushnil(L); return 1; }
     /* PICO-8 add returns the inserted value */
     lua_Integer len = luaL_len(L, 1);
@@ -689,6 +1032,7 @@ static int l_add(lua_State *L) {
     return 1;
 }
 static int l_del(lua_State *L) {
+    TRACE("del");
     if (!lua_istable(L, 1)) { lua_pushnil(L); return 1; }
     lua_Integer len = luaL_len(L, 1);
     for (lua_Integer i = 1; i <= len; i++) {
@@ -711,6 +1055,7 @@ static int l_del(lua_State *L) {
     return 1;
 }
 static int l_count(lua_State *L) {
+    TRACE("count");
     if (!lua_istable(L, 1)) { lua_pushinteger(L, 0); return 1; }
     lua_pushinteger(L, luaL_len(L, 1));
     return 1;
@@ -723,6 +1068,7 @@ static int l_count(lua_State *L) {
  * advance i, so next iteration picks up the new occupant of slot i.
  * Also re-evaluates #t each step so add() during iter is honored. */
 static int l_foreach(lua_State *L) {
+    TRACE("foreach");
     if (!lua_istable(L, 1) || !lua_isfunction(L, 2)) return 0;
     lua_Integer i = 1;
     for (;;) {
@@ -802,9 +1148,38 @@ static const luaL_Reg p8_funcs[] = {
     { "bnot",     l_p8_bnot },
     { "ord",      l_p8_ord },
     { "chr",      l_p8_chr },
+    { "split",    l_p8_split },
     /* memory */
     { "peek",     l_peek },
     { "poke",     l_poke },
+    { "peek2",    l_peek2 },
+    { "poke2",    l_poke2 },
+    { "peek4",    l_peek4 },
+    { "poke4",    l_poke4 },
+    { "unpack",   l_p8_unpack },
+    { "pack",     l_p8_pack },
+    /* drawing extras */
+    { "fillp",    l_p8_fillp },
+    { "flip",     l_p8_flip },
+    { "oval",     l_p8_oval },
+    { "ovalfill", l_p8_ovalfill },
+    { "tline",    l_p8_tline },
+    { "mapdraw",  l_map },
+    /* table extras */
+    { "deli",     l_p8_deli },
+    /* bitwise rotates */
+    { "rotl",     l_p8_rotl },
+    { "rotr",     l_p8_rotr },
+    /* host-control no-op stubs */
+    { "extcmd",   l_p8_extcmd },
+    { "cstore",   l_p8_cstore },
+    { "serial",   l_p8_serial },
+    { "stop",     l_p8_stop },
+    { "run",      l_p8_run },
+    { "reset",    l_p8_reset },
+    { "ls",       l_p8_ls },
+    { "holdframe", l_p8_holdframe },
+    { "_set_fps", l_p8_set_fps },
     /* text + cursor */
     { "print",    l_print },
     { "cursor",   l_cursor },
@@ -836,6 +1211,31 @@ static const luaL_Reg p8_funcs[] = {
     { NULL, NULL }
 };
 
+/* Universal trace wrapper.
+ *
+ * Each PICO-8 binding is registered as a C closure with a single
+ * integer upvalue — the binding's index in g_bind_table[]. The
+ * wrapper looks up the real function and name via the index,
+ * calls the trace hook if set, and forwards.
+ *
+ * We use an integer table instead of stuffing function pointers
+ * into lightuserdata because storing a function pointer in a void*
+ * is technically UB per C99/C11, and on Cortex-M Thumb mode the
+ * LSB of a function pointer is the mode bit, which makes round-
+ * tripping through `void *` particularly fragile. Indices are
+ * portable. */
+#define P8_MAX_BINDINGS 128
+static lua_CFunction g_bind_func[P8_MAX_BINDINGS];
+static const char   *g_bind_name[P8_MAX_BINDINGS];
+static int           g_bind_count = 0;
+
+static int p8_trace_wrap(lua_State *L) {
+    int idx = (int)lua_tointeger(L, lua_upvalueindex(1));
+    if (idx < 0 || idx >= g_bind_count) return 0;
+    if (p8_trace_hook) p8_trace_hook(g_bind_name[idx]);
+    return g_bind_func[idx](L);
+}
+
 void p8_api_install(p8_vm *vm, p8_machine *machine, p8_input *input) {
     lua_State *L = vm->L;
 
@@ -852,8 +1252,12 @@ void p8_api_install(p8_vm *vm, p8_machine *machine, p8_input *input) {
     lua_pushlightuserdata(L, input);
     lua_rawset(L, LUA_REGISTRYINDEX);
 
-    /* Register every binding as a global. PICO-8 carts call the
-     * functions bare (`spr(0, 64, 64)`), not `pico8.spr(...)`. */
+    /* Register every binding directly. The universal-wrapper
+     * approach (closure with index upvalue) was tried but broke
+     * cart load on device with no usable diagnostic — the failure
+     * mode was a fault before any trace event fired. Revert to
+     * direct registration; per-binding TRACE() calls cover the
+     * functions we care about. */
     for (const luaL_Reg *r = p8_funcs; r->name; r++) {
         lua_pushcfunction(L, r->func);
         lua_setglobal(L, r->name);

@@ -23,18 +23,11 @@ extern "C" {
  * tight so OOMs surface early. Will be raised in Phase 1 once the
  * 64 KB P8 memory map and framebuffers are accounted for. */
 #ifndef P8_LUA_HEAP_CAP
-/* 256 KB is comfortably above what real PICO-8 carts use in
- * practice (Celeste Classic peaks around 60 KB; Lootslime
- * pre-allocates a couple of large tables in _init and exceeds
- * 128 KB; nothing legitimate goes past ~200 KB). */
-/* Realistic device ceiling: 520 KB SRAM minus ~280 KB BSS minus
- * ~16 KB stacks ≈ 220 KB free at boot. We leave a safety margin
- * for malloc fragmentation, FatFs/MSC scratch buffers, and the
- * stb_image transient when picker thumbnails are decoded. 192 KB
- * is the largest cap that comfortably fits all of those. Carts
- * that legitimately need more (e.g. lootslime which pre-allocates
- * many large tables in _init) can't run on this hardware. */
-#define P8_LUA_HEAP_CAP (192 * 1024)
+/* Device: 520 KB SRAM − ~184 KB BSS − 16 KB stack = ~320 KB for
+ * libc heap. Give 256 KB to Lua's capped allocator, leaving ~64 KB
+ * for cart-load transients. 256 KB covers Delunky (peaks ~220 KB
+ * runtime). lootslime (~300 KB+ _init) still OOMs. */
+#define P8_LUA_HEAP_CAP (256 * 1024)
 #endif
 
 typedef struct p8_vm {

@@ -21,4 +21,12 @@
 void p8_log_stage   (p8_machine *m, uint16_t *scanline, const char *msg);
 void p8_log_to_file (const char *msg);
 
+/* RAM ring buffer of fine-grained events. The cart-run loop pushes
+ * "phase tags" here on every frame; nothing touches flash. On a
+ * hardfault, p8_log_dump_ring() walks the ring and writes its
+ * contents to /thumbyp8.log so the next boot's log shows exactly
+ * what was happening just before the fault. */
+void p8_log_ring    (const char *msg);     /* push one entry */
+void p8_log_dump_ring(void);                /* drain ring → file */
+
 #endif

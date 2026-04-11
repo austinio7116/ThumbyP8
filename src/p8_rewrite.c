@@ -144,30 +144,72 @@ static void apply_not_equal(char *line, size_t n, const int *state) {
     }
 }
 
-/* ---------- transform 2: compound assigns ---------------------------- */
-/* Find first compound op at code-state, depth-0. Returns index of op
- * char, or -1 if none. `op_out` receives the operator char. */
-static int find_compound(const char *line, size_t n, const int *state, char *op_out) {
+/* ---------- transform 2: compound assigns ----------------------------
+ * Returns the start index of the operator token (so apply_compound
+ * can splice from here). `op_out` is a small buffer that receives
+ * the actual op text — either a single character (`+`, `-`, `*`,
+ * `/`, `%`, `|`, `&`, `^`) or `..` (two chars). `op_len_out` is
+ * how many characters of operator there are (1 or 2).
+ * The end of the operator (the position of `=`) is op_pos + *op_len_out.
+ */
+static int find_compound(const char *line, size_t n, const int *state,
+                          char *op_out, int *op_len_out) {
     int depth = 0;
     for (size_t i = 0; i < n; i++) {
         if (state[i] != S_CODE) continue;
         char c = line[i];
         if (c == '(' || c == '[' || c == '{') depth++;
         else if (c == ')' || c == ']' || c == '}') { if (depth > 0) depth--; }
-        else if (depth == 0 &&
-                 (c == '+' || c == '-' || c == '*' || c == '/' || c == '%'
-                  || c == '|' || c == '&' || c == '^') &&
-                 i + 1 < n && line[i+1] == '=') {
-            /* Guard: not `//=` — but Lua doesn't have that anyway,
-             * and a standalone `//` is int divide. If we see `/` we
-             * also need to ensure it's not preceded by `/`. */
-            if (c == '/' && i > 0 && line[i-1] == '/') continue;
-            /* Guard: `==`, `~=`, `<=`, `>=` already impossible because
-             * their first char is not in our set. */
-            /* Guard: inside of == test (e.g. `a==b`): our op chars
-             * aren't `=`, so fine. */
-            *op_out = c;
-            return (int)i;
+        else if (depth == 0) {
+            /* Two-char operator `..=` (string concat compound). */
+            if (c == '.' && i + 2 < n && line[i+1] == '.' && line[i+2] == '=') {
+                op_out[0] = '.';
+                op_out[1] = '.';
+                op_out[2] = 0;
+                *op_len_out = 2;
+                return (int)i;
+            }
+            /* Two-char operator `<<=` and `>>=` (shift compound). */
+            if ((c == '<' && i + 2 < n && line[i+1] == '<' && line[i+2] == '=') ||
+                (c == '>' && i + 2 < n && line[i+1] == '>' && line[i+2] == '=')) {
+                op_out[0] = c;
+                op_out[1] = c;
+                op_out[2] = 0;
+                *op_len_out = 2;
+                return (int)i;
+            }
+            /* PICO-8 `^^=` (XOR compound assign). The underlying
+             * operator in Lua 5.4 is `~` (binary XOR), so we emit
+             * that as the op text and report length 2 so the
+             * caller skips both `^` chars before the `=`. */
+            if (c == '^' && i + 2 < n && line[i+1] == '^' && line[i+2] == '=') {
+                op_out[0] = '~';
+                op_out[1] = 0;
+                *op_len_out = 2;
+                return (int)i;
+            }
+            /* PICO-8 `//=` (integer divide compound assign). Lua
+             * has `//` as the operator but no compound form. */
+            if (c == '/' && i + 2 < n && line[i+1] == '/' && line[i+2] == '=') {
+                op_out[0] = '/';
+                op_out[1] = '/';
+                op_out[2] = 0;
+                *op_len_out = 2;
+                return (int)i;
+            }
+            /* Single-char operators followed by `=`. */
+            if ((c == '+' || c == '-' || c == '*' || c == '/' || c == '%'
+                 || c == '|' || c == '&' || c == '^')
+                && i + 1 < n && line[i+1] == '=') {
+                /* Guard: don't match `//=` (which Lua doesn't have
+                 * and PICO-8 doesn't either). A standalone `//` is
+                 * int divide. */
+                if (c == '/' && i > 0 && line[i-1] == '/') continue;
+                op_out[0] = c;
+                op_out[1] = 0;
+                *op_len_out = 1;
+                return (int)i;
+            }
         }
     }
     return -1;
@@ -267,8 +309,9 @@ static int find_expr_end(const char *line, size_t n, int rhs_start) {
 /* Apply compound-assign rewrite into `out`. `line` is the raw line
  * (without trailing newline); `n` is length. */
 static void apply_compound(buf *out, const char *line, size_t n, const int *state) {
-    char op;
-    int op_pos = find_compound(line, n, state, &op);
+    char op[3];
+    int  op_len = 1;
+    int op_pos = find_compound(line, n, state, op, &op_len);
     if (op_pos < 0) {
         buf_append(out, line, n);
         return;
@@ -279,9 +322,9 @@ static void apply_compound(buf *out, const char *line, size_t n, const int *stat
         buf_append(out, line, n);
         return;
     }
-    /* RHS: from after the `=` to the end of the expression (honoring
-     * paren depth, strings, statement keywords, `;`, and comments). */
-    int rhs_start = op_pos + 2;
+    /* RHS: from after the `=` (which is at op_pos + op_len) to the
+     * end of the expression. */
+    int rhs_start = op_pos + op_len + 1;
     int rhs_end   = find_expr_end(line, n, rhs_start);
     /* Trim trailing whitespace on RHS */
     while (rhs_end > rhs_start && (line[rhs_end-1] == ' ' || line[rhs_end-1] == '\t'))
@@ -291,13 +334,17 @@ static void apply_compound(buf *out, const char *line, size_t n, const int *stat
         rhs_start++;
     (void)state;
 
-    /* Emit: prefix [0..lhs_start) + lhs + " = " + lhs + " " + op + " (" + rhs + ")" + tail */
+    /* Emit: prefix [0..lhs_start) + lhs + " = " + lhs + " " + op + " (" + rhs + ")" + tail.
+     * Note: op_len is how many source chars to *skip* (for the
+     * RHS scan to start in the right place), but the emitted op
+     * text might be different — `^^=` has op_len=2 but the
+     * emitted op is `~` (1 char). Use strlen(op) for emission. */
     buf_append(out, line, lhs_start);
     buf_append(out, line + lhs_start, op_pos - lhs_start);
     buf_append_cstr(out, " = ");
     buf_append(out, line + lhs_start, op_pos - lhs_start);
     buf_put(out, ' ');
-    buf_put(out, op);
+    buf_append_cstr(out, op);
     buf_append_cstr(out, " (");
     buf_append(out, line + rhs_start, rhs_end - rhs_start);
     buf_put(out, ')');
