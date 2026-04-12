@@ -1017,6 +1017,13 @@ static int all_iter(lua_State *L) {
     while (i <= len) {
         lua_rawgeti(L, lua_upvalueindex(1), i);
         if (!lua_isnil(L, -1)) {
+            /* PICO-8 _ENV support: set __index = _G on tables */
+            if (lua_istable(L, -1) && !lua_getmetatable(L, -1)) {
+                lua_getfield(L, LUA_REGISTRYINDEX, "p8_env_mt");
+                lua_setmetatable(L, -2);
+            } else if (lua_istable(L, -2)) {
+                lua_pop(L, 1);
+            }
             /* Update upvalues for next call */
             lua_pushinteger(L, i);
             lua_replace(L, lua_upvalueindex(2));
@@ -1108,6 +1115,15 @@ static int l_foreach(lua_State *L) {
             lua_pop(L, 1);
             i++;
             continue;
+        }
+        /* PICO-8 _ENV support: if the value is a table without a
+         * metatable, give it __index = _G so `function(_ENV)` patterns
+         * can find global functions like btn, spr, band, etc. */
+        if (lua_istable(L, -1) && !lua_getmetatable(L, -1)) {
+            lua_getfield(L, LUA_REGISTRYINDEX, "p8_env_mt");
+            lua_setmetatable(L, -2);
+        } else if (lua_istable(L, -2)) {
+            lua_pop(L, 1);  /* pop the metatable from getmetatable */
         }
         /* Call fn(value), keeping a duplicate for shift detection. */
         lua_pushvalue(L, -1);            /* stack: value, value */
