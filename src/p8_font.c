@@ -25,7 +25,7 @@
 
 static const uint16_t glyph_unknown = 0x7fff;  /* 3×5 solid block */
 
-static const uint16_t font[256] = {
+const uint16_t font[256] = {
     [' '] = 0x0000,
     [ 33] = 0x2092, [ 34] = 0x002d, [ 35] = 0x5f7d, [ 36] = 0x2f9f,
     [ 37] = 0x52a5, [ 38] = 0x7adb, [ 39] = 0x0012, [ 40] = 0x224a,

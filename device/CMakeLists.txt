@@ -132,6 +132,7 @@ add_executable(p8run_device
     p8_picker.c
     p8_log.c
     p8_bmp.c
+    p8_menu.c
     usb_descriptors.c
     fatfs/ff.c
     fatfs/ffsystem.c

@@ -40,6 +40,7 @@
 #include "p8_p8png.h"
 #include "p8_translate.h"
 #include "p8_bmp.h"
+#include "p8_menu.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -920,17 +921,76 @@ int main(void) {
         uint32_t frame = 0;
         absolute_time_t next = make_timeout_time_us(frame_us);
 
-        /* Run until the user holds MENU, or a Lua error fires. */
+        /* Run until the user exits via menu, or a Lua error fires. */
+        static int show_fps_toggle = 1;
         int return_to_picker = 0;
         char err_msg[160] = {0};
+        uint32_t menu_hold_start = 0;
+        int menu_was_pressed = 0;
+
         while (!return_to_picker) {
             write_frame_count(&machine, frame);
 
             uint8_t btn = p8_buttons_read();
             p8_input_begin_frame(&input, btn);
+
+            /* MENU button: long press (>400ms) opens the pause menu. */
             if (p8_buttons_menu_pressed()) {
-                return_to_picker = 1;
-                break;
+                if (!menu_was_pressed) {
+                    menu_hold_start = (uint32_t)time_us_64();
+                    menu_was_pressed = 1;
+                }
+                uint32_t held_ms = ((uint32_t)time_us_64() - menu_hold_start) / 1000;
+                if (held_ms > 400) {
+                    /* Build menu items */
+                    p8_menu_item_t items[6];
+                    int ni = 0;
+
+                    items[ni++] = (p8_menu_item_t){
+                        .kind = P8_MENU_KIND_ACTION, .label = "Resume",
+                        .enabled = true, .action_id = P8_MENU_ACT_RESUME };
+
+                    items[ni++] = (p8_menu_item_t){
+                        .kind = P8_MENU_KIND_TOGGLE, .label = "Show FPS",
+                        .value_ptr = &show_fps_toggle, .enabled = true };
+
+                    /* Battery info */
+                    static int batt_pct = 0;
+                    static char batt_text[16];
+                    float bv = 3.7f; /* placeholder — no ADC on emulator */
+                    #ifdef PICO_ON_DEVICE
+                    /* TODO: read actual battery voltage via ADC */
+                    #endif
+                    batt_pct = (int)((bv - 3.0f) / (4.2f - 3.0f) * 100);
+                    if (batt_pct < 0) batt_pct = 0;
+                    if (batt_pct > 100) batt_pct = 100;
+                    snprintf(batt_text, sizeof(batt_text), "%d%%", batt_pct);
+                    items[ni++] = (p8_menu_item_t){
+                        .kind = P8_MENU_KIND_INFO, .label = "Battery",
+                        .info_text = batt_text, .value_ptr = &batt_pct,
+                        .min = 0, .max = 100, .enabled = true };
+
+                    items[ni++] = (p8_menu_item_t){
+                        .kind = P8_MENU_KIND_ACTION, .label = "Quit to picker",
+                        .enabled = true, .action_id = P8_MENU_ACT_QUIT };
+
+                    /* Present the last game frame to scanline for the menu overlay */
+                    p8_machine_present(&machine, scanline);
+
+                    p8_menu_result_t mr = p8_menu_run(scanline, "ThumbyP8",
+                        cart_entries[chosen].name, items, ni);
+
+                    if (mr.kind == P8_MENU_ACTION && mr.action_id == P8_MENU_ACT_QUIT) {
+                        return_to_picker = 1;
+                        break;
+                    }
+                    /* Resume — wait for MENU release */
+                    while (p8_buttons_menu_pressed()) sleep_ms(10);
+                    menu_was_pressed = 0;
+                    continue;
+                }
+            } else {
+                menu_was_pressed = 0;
             }
 
             /* Call _update / _draw with explicit error capture so
@@ -977,11 +1037,8 @@ int main(void) {
             p8_audio_render(audio_buf, n);
             p8_audio_pwm_push(audio_buf, n);
 
-            /* FPS counter overlay — drawn directly into the 4bpp
-             * framebuffer after _draw returns, before LCD present.
-             * Uses the cart's own camera/clip state so we reset
-             * camera to (0,0) briefly for screen-space drawing. */
-            {
+            /* FPS counter overlay — toggled via pause menu. */
+            if (show_fps_toggle) {
                 static uint32_t fps_last_us = 0;
                 static int fps_display = 0;
                 static int fps_count = 0;
