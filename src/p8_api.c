@@ -915,7 +915,12 @@ static int l_p8_stat(lua_State *L) {
     TRACE("stat");
     int n = argi(L, 1, 0);
     if (n >= 16 && n <= 23) {
+        /* Audio channel state */
         lua_pushinteger(L, p8_audio_stat(n));
+    } else if (n == 4 || n == 6 || n == 13) {
+        /* String-valued stats: clipboard, param string, cart filename.
+         * Return empty string (not 0) so #stat(6) works. */
+        lua_pushstring(L, "");
     } else {
         lua_pushinteger(L, 0);
     }
