@@ -633,6 +633,11 @@ int main(void) {
     p8_lcd_init();
     p8_audio_pwm_init();
 
+    /* Clear screen immediately so the LCD doesn't show uninitialised RAM. */
+    memset(scanline, 0, sizeof(scanline));
+    p8_lcd_present(scanline);
+    p8_lcd_wait_idle();
+
     /* Filesystem comes up FIRST — before USB. */
     p8_flash_disk_init();
     if (boot_filesystem() != 0) {
