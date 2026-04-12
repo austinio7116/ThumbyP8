@@ -21,7 +21,7 @@ Last updated: 2026-04-12
 | delunky102-0 | 117KB | Playable | Working, random levels confirmed |
 | digger-2 | 115KB | Playable | Working |
 | dominion_ex-4 | 112KB | Partial | Plays but eventually crashes/hangs |
-| flipknight-0 | 127KB | Broken | _init error (not OOM — code issue) |
+| flipknight-0 | 127KB | Playable | Working |
 | fromrust_a-4 | 211KB | Partial | Loads, crashes during gameplay: nil concat |
 | fsgupicozombiegarden121-0 | 193KB | Partial | Loads but needs mouse input (not supported) |
 | hotwax-5 | 161KB | Broken | _init error (not OOM — code issue) |
