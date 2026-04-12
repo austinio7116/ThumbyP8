@@ -16,10 +16,10 @@ Last updated: 2026-04-12
 | adelie-0 | OK | Untested | Was running OK |
 | age_of_ants-9 | OK | Broken | Load error: attempt to index a string value (local 'o') |
 | beam4-2 | OK | Broken | Hangs on load — was working with host builds |
-| celeste | OK | Playable | Controls work, fully playable |
+| celeste | OK | Playable | Fully playable |
 | cheezymaze_ex-0 | OK | Untested | Controls were broken — should be fixed by glyph fix |
 | delunky102-0 | OK | Untested | Controls were broken — should be fixed by glyph fix |
-| digger-2 | OK | Partial | Quite playable but crashes late in level 1 |
+| digger-2 | OK | Playable | Working |
 | dominion_ex-4 | OK | Partial | Plays but eventually crashes/hangs |
 | flipknight-0 | OK | Untested | Was running OK |
 | fromrust_a-4 | OK | Partial | Loads but crashes during gameplay: nil concat field '?' |
@@ -44,7 +44,7 @@ Last updated: 2026-04-12
 | ruwukawisa-0 | OK | Untested | Was running OK |
 | start_picocraft_1-3 | OK | Untested | Controls were broken — should be fixed by glyph fix |
 | terra_1cart-43 | OK | Untested | Had nil concat in _init — may be fixed by int/float fix |
-| tinygolfpuzzles-1 | OK | Untested | Controls were broken — should be fixed by glyph fix |
+| tinygolfpuzzles-1 | OK | Playable | Working |
 | woodworm-0 | OK | Untested | Had "number has no integer representation" — should be fixed by bitwise fix |
 
 ## Known Limitations
