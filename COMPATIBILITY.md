@@ -17,7 +17,7 @@ Last updated: 2026-04-12
 | age_of_ants-9 | 180KB | Broken | Top-level error: attempt to index a string value |
 | beam4-2 | 199KB | Untested | _init OK on host, was hanging on device |
 | celeste | 146KB | Playable | Fully playable |
-| cheezymaze_ex-0 | ? | Broken | _init loops/hangs (timeout on host test) |
+| cheezymaze_ex-0 | ? | Playable | Working (controls fixed by glyph mapping) |
 | delunky102-0 | 117KB | Playable | Working, random levels confirmed |
 | digger-2 | 115KB | Playable | Working |
 | dominion_ex-4 | 112KB | Partial | Plays but eventually crashes/hangs |
