@@ -5,6 +5,7 @@ build*/
 *.obj
 *.elf
 *.uf2
+!firmware.uf2
 *.dis
 *.bin
 *.hex
