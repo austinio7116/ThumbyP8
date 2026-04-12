@@ -35,14 +35,14 @@ To flash:
 
 ### 2. Add carts
 
-On first boot, the device formats its flash storage and appears as a USB drive labelled **P8THUMBv1**.
+On first boot (or if no carts are on the device), ThumbyP8 shows a lobby screen and appears as a USB drive labelled **P8THUMBv1**.
 
 1. Download `.p8.png` cart files from the [PICO-8 BBS](https://www.lexaloffle.com/bbs/?cat=7) or elsewhere
 2. Drag them into the `/carts/` folder on the P8THUMBv1 drive
 3. Eject the drive from your OS (or just wait — it auto-flushes)
-4. Press **A** to enter the game picker
+4. Press **A** — the device reboots and begins converting your carts
 
-The device automatically converts `.p8.png` files to playable bytecode on boot. This takes one reboot per cart (a few seconds each). You'll see a progress screen during conversion.
+Each `.p8.png` is automatically converted to playable bytecode (one cart per reboot cycle, a few seconds each). Once all carts are converted, the device boots straight into the game picker — no lobby needed.
 
 ### 3. Play
 
