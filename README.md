@@ -40,9 +40,9 @@ On first boot (or if no carts are on the device), ThumbyP8 shows a lobby screen 
 1. Download `.p8.png` cart files from the [PICO-8 BBS](https://www.lexaloffle.com/bbs/?cat=7) or elsewhere
 2. Drag them into the `/carts/` folder on the P8THUMBv1 drive
 3. Eject the drive from your OS (or just wait — it auto-flushes)
-4. Press **A** — the device reboots and begins converting your carts
+4. Press **A** to enter the picker (or reboot if new carts need converting)
 
-Each `.p8.png` is automatically converted to playable bytecode (one cart per reboot cycle, a few seconds each). Once all carts are converted, the device boots straight into the game picker — no lobby needed.
+Each `.p8.png` is automatically converted to playable bytecode at boot (one cart per reboot cycle, a few seconds each). The lobby always shows on boot so USB is available for adding more carts.
 
 ### 3. Play
 
@@ -88,8 +88,8 @@ When you drop a `.p8.png` onto the USB drive and reboot, here's what happens:
   │  2. Steganographic byte extraction          │
   │  3. PXA Lua decompression                   │
   │  4. shrinko8 parse + unminify (C port)      │
-  │  5. PICO-8 dialect → Lua 5.4 translation    │
-  │  6. Lua 5.4 bytecode compilation            │
+  │  5. PICO-8 dialect → Lua 5.2 translation    │
+  │  6. Lua 5.2 bytecode compilation            │
   │  7. Save .luac + .rom + .bmp to FAT         │
   │  8. Reboot (one cart per cycle)             │
   │                                             │
@@ -137,7 +137,7 @@ The parser also converts PICO-8 fixed-point bitwise operators to function calls 
 - `a & b` → `band(a, b)` / `a | b` → `bor(a, b)` / `a ^^ b` → `bxor(a, b)`
 - `~a` → `bnot(a)`
 
-This is necessary because PICO-8 uses 16.16 fixed-point for all bitwise operations (`0.5 << 1 = 1.0`), while Lua 5.4's native operators require integers.
+PICO-8 uses 16.16 fixed-point for all bitwise operations (`0.5 << 1 = 1.0`). Converting to function calls lets the runtime handle the fixed-point conversion correctly.
 
 The unminifier also handles:
 - Shorthand `if (cond) stmt` → `if cond then stmt end`
@@ -150,7 +150,7 @@ The unminifier also handles:
 **Stage 3: Dialect translation** (`src/p8_translate.c`)
 
 Character-level transforms on the clean shrinko8 output:
-- `\` → `//` (integer divide), `\=` → `//=`
+- `\` → `p8idiv()` (integer divide — Lua 5.2 has no `//` operator)
 - `@addr` → `peek(addr)`, `%addr` → `peek2(addr)`, `$addr` → `peek4(addr)`
 - `0b1010` binary literals → decimal
 - Button/arrow glyphs (⬅➡⬆⬇🅾❎) → button indices (0–5)
@@ -160,24 +160,24 @@ Character-level transforms on the clean shrinko8 output:
 
 Then a line-based rewriter expands compound assigns (`x += y` → `x = x + (y)`) and converts `!=` → `~=`.
 
-**Stage 4: Compile** (Lua 5.4's `luaL_loadbuffer` + `lua_dump`)
+**Stage 4: Compile** (`luaL_loadbuffer` + `lua_dump`)
 
-The translated Lua 5.4 source is compiled to bytecode by the standard Lua compiler (vendored PUC Lua 5.4.7). The bytecode is dumped to a `.luac` file on the FAT filesystem.
+The translated source is compiled to Lua 5.2 bytecode and dumped directly to a `.luac` file on the FAT filesystem (no intermediate heap buffer).
 
 ### Layer 2: The Lua Runtime
 
-ThumbyP8 vendors **PUC Lua 5.4.7** (MIT, unmodified reference implementation from lua.org) compiled with `LUA_32BITS=1` for 32-bit integer + 32-bit float (the RP2350's Cortex-M33 has a single-precision FPU but no double FPU).
+ThumbyP8 vendors **PUC Lua 5.2.4** (MIT) — the same Lua version PICO-8 is based on. This eliminates the integer/float distinction that caused widespread compatibility issues with Lua 5.3+. Configured with `LUA_NUMBER float` for single-precision (the RP2350's Cortex-M33 has a hardware single-precision FPU but no double FPU).
 
 ```
 src/p8.c               ← Lua VM lifecycle + capped allocator
   │
   ▼
-lua/                   ← Vendored Lua 5.4.7
+lua/                   ← Vendored Lua 5.2.4
 ├── lvm.c              ← Bytecode dispatch (the hot loop)
 ├── lparser.c          ← Parser → bytecode compiler
 ├── lgc.c              ← Garbage collector
 ├── lapi.c, ldo.c, llex.c, lstring.c, ltable.c, …
-└── lbaselib.c, ltablib.c, lstrlib.c, lmathlib.c
+└── lbaselib.c, ltablib.c, lstrlib.c, lmathlib.c, lcorolib.c
 ```
 
 **What runs as Lua bytecode** (interpreted by `lvm.c`):
@@ -202,15 +202,13 @@ lua/                   ← Vendored Lua 5.4.7
 
 **Performance:** Lua bytecode dispatch costs ~148 ns per instruction at 250 MHz. Carts do 10K–30K instructions per frame at 30 fps, so the interpreter uses ~1–4 ms of the 33 ms frame budget. Drawing and audio (pure C) dominate.
 
-**Fixed-point bitwise operations:** PICO-8 uses 16.16 fixed-point for all bitwise ops. The runtime functions (`shl`, `shr`, `band`, `bor`, etc.) convert to/from fixed-point:
-```c
-int32_t fix = (int32_t)(lua_value * 65536.0f);  // to fixed-point
-// ... operate on fix ...
-// return as integer if fractional part is zero, float otherwise
-if ((result & 0xFFFF) == 0) lua_pushinteger(L, result >> 16);
-else lua_pushnumber(L, (float)result / 65536.0f);
-```
-This preserves Lua 5.4's integer/float key distinction (`t[3]` ≠ `t[3.0]`).
+**Fixed-point bitwise operations:** PICO-8 uses 16.16 fixed-point for all bitwise ops. The runtime functions (`shl`, `shr`, `band`, `bor`, etc.) convert to/from fixed-point internally, operating on the 32-bit integer representation then converting back to float.
+
+**PICO-8 environment support:** Carts that use `foreach(t, function(_ENV) ... end)` or `for _ENV in all(t) do ... end` rely on table elements inheriting global function lookups. The runtime sets a `{__index = _G}` metatable on table elements passed through `foreach` and `all` so globals like `btn`, `spr`, `band` are accessible from the cart's environment tables.
+
+**String indexing:** PICO-8's `str[i]` returns the ordinal (byte value) of the character at position `i`. This is implemented via a custom `__index` on the string metatable.
+
+**Coroutines:** PICO-8's `cocreate`, `coresume`, `costatus`, and `yield` are supported via Lua 5.2's native coroutine library, aliased to the PICO-8 function names.
 
 ### Layer 3: XIP Bytecode Execution
 
@@ -242,7 +240,7 @@ A corresponding patch in `lfunc.c` ensures the GC doesn't try to free XIP-reside
 │   └── ~56 KB  Cart load transients (freed before _init)
 
 16 MB QSPI Flash
-├── 0–1 MB       Firmware (~740 KB)
+├── 0–1 MB       Firmware (~715 KB)
 ├── 1–13 MB      FAT16 cart filesystem (12 MB usable)
 └── 13–13.25 MB  Active cart region (bytecode + ROM in XIP)
 ```
@@ -274,7 +272,7 @@ The menu renders as a translucent overlay on top of the dimmed game frame.
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for per-cart test results.
 
-**34/34** test carts compile successfully through the on-device pipeline. Runtime compatibility varies — see the compatibility file for details.
+All test carts compile successfully through the on-device pipeline. Runtime compatibility varies — see the compatibility file for details.
 
 ### Known Limitations
 
@@ -283,9 +281,10 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for per-cart test results.
 - **`tline` is a stub** — mode-7/floor effects don't render.
 - **`reload` is a stub** — runtime ROM restore doesn't work.
 - **`cstore`/`dget`/`dset` are stubs** — no persistent save data.
+- **`rrect`/`rrectfill`** render as regular rectangles (no rounding).
 - **No multi-cart support** — `load()` won't load other carts.
 - **No mouse input** — carts requiring mouse won't work.
-- **P8SCII special characters** display as blocks, not glyphs.
+- **P8SCII special characters** display as numeric values, not glyphs.
 
 ---
 
@@ -313,13 +312,12 @@ cmake --build build_device -j8
 ### Host Test Tool
 
 ```bash
-gcc -O2 -I src -I src/lib -o tools/test_translate \
+gcc -O2 -DLUA_USE_C89 -I src -I src/lib -o tools/test_translate \
     tools/test_translate.c src/p8_p8png.c src/p8_translate.c \
     src/p8_shrinko.c src/p8_machine.c -lm
 
 # Test a cart:
 ./tools/test_translate carts/celeste.p8.png > /tmp/celeste.lua
-./tools/luac54 -o /dev/null /tmp/celeste.lua  # should succeed
 ```
 
 ---
@@ -330,7 +328,7 @@ gcc -O2 -I src -I src/lib -o tools/test_translate \
 ThumbyP8/
 ├── README.md                  ← this file
 ├── COMPATIBILITY.md           ← per-cart test results
-├── lua/                       ← vendored Lua 5.4.7 (MIT)
+├── lua/                       ← vendored Lua 5.2.4 (MIT)
 ├── src/                       ← cross-platform runtime
 │   ├── p8.c/h                 ← Lua VM lifecycle + capped allocator
 │   ├── p8_machine.c/h         ← 64 KB PICO-8 memory map
@@ -339,7 +337,7 @@ ThumbyP8/
 │   ├── p8_audio.c/h           ← 4-channel synth
 │   ├── p8_font.c/h            ← 3×5 bitmap font (Pemsa, MIT)
 │   ├── p8_shrinko.c/h         ← streaming shrinko8 C port (tokenize+parse+emit)
-│   ├── p8_translate.c/h       ← PICO-8 dialect → Lua 5.4 translator
+│   ├── p8_translate.c/h       ← PICO-8 dialect → Lua 5.2 translator
 │   ├── p8_p8png.c/h           ← .p8.png decoder (stb_image + PXA)
 │   ├── p8_cart.c/h            ← .p8 text cart loader
 │   ├── p8_input.c/h           ← button mask helpers
@@ -368,14 +366,14 @@ ThumbyP8/
 │   ├── pico8_lua.py           ← (legacy) token rewriter
 │   └── shrinko8/              ← vendored shrinko8 (MIT)
 │
-└── carts/                     ← test .p8.png cart files
+└── carts/                     ← user's .p8.png cart files (gitignored)
 ```
 
 ---
 
 ## Licenses
 
-- **Lua 5.4.7** — MIT, Lua.org
+- **Lua 5.2.4** — MIT, Lua.org
 - **stb_image** — Public domain / MIT, Sean Barrett
 - **FatFs R0.15** — BSD-1-clause, ChaN
 - **shrinko8** — MIT, thisismypassport (C port in p8_shrinko.c)
