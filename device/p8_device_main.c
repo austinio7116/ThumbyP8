@@ -545,68 +545,60 @@ static void wait_for_carts(void) {
             blink++;
             p8_machine_reset(&machine);
             p8_camera(&machine, 0, 0);
-            p8_cls(&machine, 1);
-            p8_font_draw(&machine, "ThumbyP8", 40, 4, 7);
+            p8_cls(&machine, 0);  /* black background */
 
-            char line[40];
-            snprintf(line, sizeof(line), "%d cart%s on disk",
-                     n_carts, n_carts == 1 ? "" : "s");
-            int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
-            p8_font_draw(&machine, line, lx, 16, 6);
+            /* Title — centred, bright */
+            p8_font_draw(&machine, "ThumbyP8", 36, 10, 7);
 
-            /* Diagnostic line 1: w c d e i (write/commit/dirty/eject/idle-ms)
-             * Diagnostic line 2: x v r b s (commit-errors/verify/reformat/boot-state/btn-mask) */
-            uint64_t now2 = (uint64_t)time_us_64();
-            uint32_t since_op_ms =
-                (uint32_t)((now2 - g_msc_last_op_us) / 1000);
-            if (since_op_ms > 9999) since_op_ms = 9999;
-            char diag[40];
-            snprintf(diag, sizeof(diag), "w%lu c%lu d%lu e%d i%lu",
-                     (unsigned long)p8_flash_disk_stat_writes(),
-                     (unsigned long)p8_flash_disk_stat_commits(),
-                     (unsigned long)p8_flash_disk_stat_dirty_n(),
-                     g_msc_ejected,
-                     (unsigned long)since_op_ms);
-            p8_font_draw(&machine, diag, 2, 24, 5);
+            /* Separator line */
+            p8_line(&machine, 20, 20, 108, 20, 5);
 
-            char diag2[40];
-            snprintf(diag2, sizeof(diag2), "x%lu r%d s%d b%02x",
-                     (unsigned long)p8_flash_disk_stat_commit_errors(),
-                     g_boot_reformatted,
-                     state,
-                     (unsigned int)p8_buttons_read());
-            p8_font_draw(&machine, diag2, 2, 32, 5);
-
-            switch (state) {
-            case LOBBY_MOUNTED: {
-                int on = (blink & 1);
-                p8_font_draw(&machine, "usb mounted",   30, 40, on ? 12 : 1);
-                p8_circfill(&machine, 64, 52, 2, on ? 12 : 1);
-                if (p8_flash_disk_dirty()) {
-                    p8_font_draw(&machine, "writes pending", 20, 68, 9);
-                } else {
-                    p8_font_draw(&machine, "drive idle",     32, 68, 6);
-                }
-                p8_font_draw(&machine, "drop .p8.png carts",   4,  88, 6);
-                p8_font_draw(&machine, "onto p8thumbv1",     16,  96, 6);
-                p8_font_draw(&machine, "auto-converts on boot",4, 104, 6);
-                break;
+            /* Cart count */
+            if (n_carts > 0) {
+                char line[40];
+                snprintf(line, sizeof(line), "%d game%s",
+                         n_carts, n_carts == 1 ? "" : "s");
+                int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
+                p8_font_draw(&machine, line, lx, 26, 6);
             }
+
+            /* Status area — centered vertically */
+            switch (state) {
+            case LOBBY_MOUNTED:
             case LOBBY_FLUSHING: {
-                int on = (blink & 1);
-                p8_font_draw(&machine, "writing to flash", 10, 52, on ? 8 : 2);
-                p8_circfill(&machine, 64, 68, 3, on ? 8 : 2);
-                p8_font_draw(&machine, "do not power off",  8, 88, 9);
+                int busy = p8_flash_disk_dirty();
+                if (busy) {
+                    /* Writes in progress — show activity */
+                    int on = (blink & 1);
+                    p8_font_draw(&machine, "saving...", 40, 50, on ? 9 : 2);
+                    p8_font_draw(&machine, "do not power off", 8, 62, 8);
+                } else {
+                    /* USB connected, idle */
+                    p8_font_draw(&machine, "usb connected", 24, 50, 11);
+                }
+
+                /* Instructions for new users */
+                p8_line(&machine, 20, 78, 108, 78, 5);
+                p8_font_draw(&machine, "drop .p8.png carts", 8, 84, 6);
+                p8_font_draw(&machine, "onto usb drive", 20, 94, 6);
+
+                if (n_carts > 0 && !busy) {
+                    p8_font_draw(&machine, "press A to play", 16, 112, 10);
+                }
                 break;
             }
             case LOBBY_READY: {
-                p8_font_draw(&machine, "ready", 52, 52, 11);
-                p8_circfill(&machine, 64, 68, 3, 11);
                 if (n_carts > 0) {
-                    p8_font_draw(&machine, "press A to play", 16, 96, 7);
+                    p8_circfill(&machine, 64, 52, 3, 11);
+                    p8_font_draw(&machine, "ready", 48, 64, 11);
+                    p8_font_draw(&machine, "press A to play", 16, 112, 10);
                 } else {
-                    p8_font_draw(&machine, "no carts yet", 24, 96, 6);
-                    p8_font_draw(&machine, "power cycle to reset", 0, 104, 6);
+                    p8_font_draw(&machine, "no games found", 16, 50, 8);
+                    p8_line(&machine, 20, 62, 108, 62, 5);
+                    p8_font_draw(&machine, "connect usb and", 12, 72, 6);
+                    p8_font_draw(&machine, "drop .p8.png files", 8, 82, 6);
+                    p8_font_draw(&machine, "into /carts/", 28, 92, 6);
+                    p8_font_draw(&machine, "then reboot", 32, 108, 5);
                 }
                 break;
             }
