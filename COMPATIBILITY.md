@@ -4,60 +4,82 @@ Last updated: 2026-04-12
 
 ## Status Key
 - **Playable** — loads, controls work, plays to completion or reasonable extent
-- **Partial** — loads but has issues (visual glitches, some features broken)
+- **Partial** — loads but has issues (visual glitches, some features broken, eventual crash)
 - **Broken** — crashes, hangs, or unplayable
-- **Untested** — needs retesting after recent fixes
+- **Impossible** — exceeds hardware memory limits
 
 ## Test Results
 
-| Cart | Compiles | Status | Notes |
-|------|----------|--------|-------|
-| 49232 | OK | Untested | Was playable, numbers showed as floats — may be fixed by int/float fix |
-| adelie-0 | OK | Untested | Was running OK |
-| age_of_ants-9 | OK | Broken | Load error: attempt to index a string value (local 'o') |
-| beam4-2 | OK | Broken | Hangs on load — was working with host builds |
-| celeste | OK | Playable | Fully playable |
-| cheezymaze_ex-0 | OK | Untested | Controls were broken — should be fixed by glyph fix |
-| delunky102-0 | OK | Playable | Working but same seed every time (rnd not seeded) |
-| digger-2 | OK | Playable | Working |
-| dominion_ex-4 | OK | Partial | Plays but eventually crashes/hangs |
-| flipknight-0 | OK | Untested | Was running OK |
-| fromrust_a-4 | OK | Partial | Loads but crashes during gameplay: nil concat field '?' |
-| fsgupicozombiegarden121-0 | OK | Partial | Loads but needs mouse input (not supported) |
-| hotwax-5 | OK | Broken | Slow then crashes |
-| kalikan_menu-6 | OK | Untested | Controls were broken — should be fixed by glyph fix |
-| lootslime-1 | OK | Broken | OOM in _init — cart too large for 300KB heap |
-| lorez-1 | OK | Broken | Hangs after load |
-| mini_pharma-1 | OK | Untested | Had nil arith error — may be fixed by int/float fix |
-| mossmoss-12 | OK | Broken | Hangs after load |
-| mot_pool-23 | OK | Untested | Was hanging on trying to start game |
-| musabanebi-0 | OK | Partial | Runtime: nil index field '?' — P8SCII glyph as table key |
-| pck404_512px_under-1 | OK | Partial | Playable but ^T ^W ^I appearing in strings (P8SCII display) |
-| phoenix08-0 | OK | Untested | Was running OK |
-| pico_arcade-2 | OK | Untested | Controls were broken — should be fixed by glyph fix |
-| pico_ball-5 | OK | Broken | Load error: attempt to get length of a number value (global 'dat') |
-| picovalley-2 | OK | Untested | Was rendering in top-left quarter, controls broken |
-| poom_0-9 | OK | Untested | Bootstrap cart — was running OK |
-| praxis_fighter_x-2 | OK | Untested | Had nil concat — may be fixed by int/float fix |
-| province-4 | OK | Untested | Controls were broken — should be fixed by glyph fix |
-| rtype-5 | OK | Partial | Runtime: nil arith field '?' — P8SCII glyph as table key |
-| ruwukawisa-0 | OK | Untested | Was running OK |
-| start_picocraft_1-3 | OK | Untested | Controls were broken — should be fixed by glyph fix |
-| terra_1cart-43 | OK | Untested | Had nil concat in _init — may be fixed by int/float fix |
-| tinygolfpuzzles-1 | OK | Playable | Working |
-| woodworm-0 | OK | Untested | Had "number has no integer representation" — should be fixed by bitwise fix |
+| Cart | Peak Heap | Status | Notes |
+|------|-----------|--------|-------|
+| 49232 | 168KB | Playable | Working, numbers may show as floats |
+| adelie-0 | 230KB | Untested | _init OK on host |
+| age_of_ants-9 | 180KB | Broken | Top-level error: attempt to index a string value |
+| beam4-2 | 199KB | Untested | _init OK on host, was hanging on device |
+| celeste | 146KB | Playable | Fully playable |
+| cheezymaze_ex-0 | ? | Broken | _init loops/hangs (timeout on host test) |
+| delunky102-0 | 117KB | Playable | Working, random levels confirmed |
+| digger-2 | 115KB | Playable | Working |
+| dominion_ex-4 | 112KB | Partial | Plays but eventually crashes/hangs |
+| flipknight-0 | 127KB | Broken | _init error (not OOM — code issue) |
+| fromrust_a-4 | 211KB | Partial | Loads, crashes during gameplay: nil concat |
+| fsgupicozombiegarden121-0 | 193KB | Partial | Loads but needs mouse input (not supported) |
+| hotwax-5 | 161KB | Broken | _init error (not OOM — code issue) |
+| kalikan_menu-6 | 116KB | Untested | _init OK on host |
+| lootslime-1 | 546KB | Impossible | Needs 546KB heap — exceeds 520KB total SRAM |
+| lorez-1 | 570KB | Impossible | Needs 570KB heap — exceeds 520KB total SRAM |
+| mini_pharma-1 | 140KB | Untested | _init OK on host |
+| mossmoss-12 | 265KB | Broken | _init error (not OOM — code issue) |
+| mot_pool-23 | 350KB | Broken | Needs 350KB heap — exceeds safe 300KB cap |
+| musabanebi-0 | 95KB | Partial | Runtime: nil index field '?' (P8SCII glyph key) |
+| pck404_512px_under-1 | 172KB | Partial | Playable but P8SCII control chars in strings |
+| phoenix08-0 | 168KB | Untested | _init OK on host |
+| pico_arcade-2 | 65KB | Untested | _init OK on host |
+| pico_ball-5 | 145KB | Broken | Top-level error: attempt to get length of number |
+| picovalley-2 | 128KB | Untested | _init OK on host |
+| poom_0-9 | 102KB | Untested | Bootstrap cart, _init OK on host |
+| praxis_fighter_x-2 | 172KB | Broken | Top-level error: nil concat (integer index) |
+| province-4 | 155KB | Untested | _init OK on host |
+| rtype-5 | 136KB | Partial | Runtime: nil arith field '?' (P8SCII glyph key) |
+| ruwukawisa-0 | 105KB | Untested | _init OK on host |
+| start_picocraft_1-3 | 124KB | Untested | _init OK on host |
+| terra_1cart-43 | 144KB | Broken | _init error: nil concat field '?' |
+| tinygolfpuzzles-1 | 118KB | Playable | Working |
+| woodworm-0 | 123KB | Untested | _init OK on host, was crashing on old firmware |
+
+## Memory Summary
+
+- **Lua heap cap**: 300KB (hard limit enforced by capped allocator)
+- **Safe maximum**: ~300KB (menu needs 32KB malloc headroom when open)
+- **31 of 34 carts** fit within 300KB
+- **1 cart** (mot_pool) needs 350KB — too tight for the menu to work
+- **2 carts** (lootslime, lorez) need 500KB+ — physically impossible on 520KB SRAM
+
+## Known Code Issues (not memory)
+
+These carts fail with runtime errors despite fitting in memory:
+
+- **age_of_ants-9**: top-level error indexing a string — likely translator issue
+- **cheezymaze_ex-0**: _init loops forever — game logic issue or missing API
+- **flipknight-0**: _init runtime error — needs investigation
+- **hotwax-5**: _init runtime error — needs investigation
+- **mossmoss-12**: _init runtime error — needs investigation
+- **pico_ball-5**: top-level error getting length of number — translator issue
+- **praxis_fighter_x-2**: top-level nil concat — likely P8SCII glyph key issue
+- **terra_1cart-43**: _init nil concat — likely P8SCII glyph key issue
 
 ## Known Limitations
 - Carts using mouse input (fsgupicozombiegarden) won't work — no mouse on Thumby Color
-- Very large carts may OOM during _init (lootslime) — 300KB Lua heap cap
 - P8SCII special characters in strings display as blocks, not glyphs
-- Some carts hang in _init (beam, mossmoss, lorez) — needs investigation
-- Button glyph display in strings shows numbers instead of icons
+- `fillp`, `tline`, `reload` are stubs
+- `cstore`/`dget`/`dset` are stubs — no persistent save data
+- No multi-cart support (`load()` won't load other carts)
 
 ## Recent Fixes (2026-04-12)
-- Button/arrow glyphs now correctly map to button indices 0-5 (was using P8SCII byte values)
-- All bitwise ops (& | ^ ~ << >> >>> <<> >><) now use 16.16 fixed-point via function calls
-- Fixed-point results return as integer when fractional part is zero (Lua 5.4 int/float key distinction)
-- PXA decompressor: removed 32-iteration limit on back-ref length (was truncating 4 carts)
-- Conversion scan now finds all carts (was limited to first 16)
-- In-game pause menu added (long-press MENU)
+- Button/arrow glyphs now correctly map to button indices 0-5
+- All bitwise ops use 16.16 fixed-point via function calls
+- Fixed-point results return as integer when fractional part is zero
+- PXA decompressor: removed 32-iteration limit on back-ref length
+- RNG seeded from hardware timer at cart launch
+- In-game pause menu with volume, FPS toggle, disk/battery info
+- Lobby skipped when carts exist — boots straight to picker
