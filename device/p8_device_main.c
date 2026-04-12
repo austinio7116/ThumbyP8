@@ -1021,8 +1021,10 @@ int main(void) {
                         return_to_picker = 1;
                         break;
                     }
-                    /* Resume — wait for MENU release */
+                    /* Resume — reset frame timer so the game doesn't
+                     * fast-forward to catch up with elapsed real time. */
                     while (p8_buttons_menu_pressed()) sleep_ms(10);
+                    next = make_timeout_time_us(frame_us);
                     menu_was_pressed = 0;
                     continue;
                 }
