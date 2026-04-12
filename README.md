@@ -18,7 +18,10 @@ PICO-8 is a trademark of Lexaloffle Games. ThumbyP8 is an independent, clean-roo
 
 4. **In-game menu.** Long-press MENU (>400ms) during gameplay to open the pause menu: Resume, Volume, Show FPS, Disk space, Battery, Quit to picker. The same menu is available from the picker (without Quit).
 
-5. **Recovery.** Hold MENU at boot to skip cart conversion. Hold B at boot to skip conversion. BOOTSEL always works to reflash.
+5. **Troubleshooting.**
+   - **USB drive not showing up or not named P8THUMBv1?** Hold MENU while powering on — this forces a reformat of the flash filesystem and re-labels the drive.
+   - **Cart conversion stuck?** Hold B while powering on to skip conversion and go straight to the lobby.
+   - **Firmware issue?** BOOTSEL (power off → hold DOWN on d-pad → power on) always works to reflash. The RP2350 boot ROM cannot be bricked.
 
 ---
 
