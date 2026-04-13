@@ -35,6 +35,9 @@ void p8_rect(p8_machine *m, int x0, int y0, int x1, int y1, int c);
 void p8_rectfill(p8_machine *m, int x0, int y0, int x1, int y1, int c);
 void p8_circ(p8_machine *m, int x, int y, int r, int c);
 void p8_circfill(p8_machine *m, int x, int y, int r, int c);
+/* Rounded rect: (x, y) = top-left, w/h = width/height, r = corner radius. */
+void p8_rrect(p8_machine *m, int x, int y, int w, int h, int r, int c);
+void p8_rrectfill(p8_machine *m, int x, int y, int w, int h, int r, int c);
 
 void p8_clip(p8_machine *m, int x, int y, int w, int h, int reset);
 void p8_camera(p8_machine *m, int x, int y);
@@ -42,6 +45,15 @@ void p8_pal_set(p8_machine *m, int c0, int c1, int p);
 void p8_palt(p8_machine *m, int c, int t);
 void p8_pal_reset(p8_machine *m);
 void p8_color(p8_machine *m, int c);
+void p8_fillp(p8_machine *m, int pattern, int transparent);
+
+/* tline — textured line. Draws pixels from (x0,y0) to (x1,y1); at
+ * each step samples the tilemap at (mx, my) and looks up the sprite
+ * index there, then samples that sprite's pixel. mx/my are in tile
+ * units (1.0 = one 8x8 tile); mdx/mdy are per-pixel increments.
+ * All float args are the Lua-facing values (PICO-8 would be 16.16). */
+void p8_tline(p8_machine *m, int x0, int y0, int x1, int y1,
+              double mx, double my, double mdx, double mdy, int layer);
 
 /* Sprite blit. n is sprite index (0..255 for first page, etc.).
  * w/h are in cells (8 px each); flip_x/flip_y are 0/1. */

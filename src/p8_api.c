@@ -137,6 +137,25 @@ static int l_rectfill(lua_State *L) {
                    argi(L, 5, p8_pen(m)));
     return 0;
 }
+/* rrect(x, y, w, h, r, [col]) — rounded rect outline */
+static int l_rrect(lua_State *L) {
+    TRACE("rrect");
+    p8_machine *m = get_machine(L);
+    p8_rrect(m, argi(L, 1, 0), argi(L, 2, 0),
+                argi(L, 3, 0), argi(L, 4, 0),
+                argi(L, 5, 0),
+                argi(L, 6, p8_pen(m)));
+    return 0;
+}
+static int l_rrectfill(lua_State *L) {
+    TRACE("rrectfill");
+    p8_machine *m = get_machine(L);
+    p8_rrectfill(m, argi(L, 1, 0), argi(L, 2, 0),
+                    argi(L, 3, 0), argi(L, 4, 0),
+                    argi(L, 5, 0),
+                    argi(L, 6, p8_pen(m)));
+    return 0;
+}
 static int l_circ(lua_State *L) {
     TRACE("circ");
     p8_machine *m = get_machine(L);
@@ -627,39 +646,65 @@ static int l_poke2(lua_State *L) {
     return 0;
 }
 
-/* peek4/poke4 — 32-bit little-endian access. */
+/* peek4/poke4 — 32-bit PICO-8 16.16 fixed-point access. The 32-bit
+ * value is stored as signed fixed-point: top 16 bits = integer part,
+ * bottom 16 bits = fractional. Convert to/from float (lua_Number). */
 static int l_peek4(lua_State *L) {
     TRACE("peek4");
     p8_machine *m = get_machine(L);
     int addr = argi(L, 1, 0);
     if (addr < 0 || addr + 3 >= P8_MEM_SIZE) {
-        lua_pushinteger(L, 0); return 1;
+        lua_pushnumber(L, 0); return 1;
     }
     uint32_t v = (uint32_t)m->mem[addr]
                | ((uint32_t)m->mem[addr + 1] << 8)
                | ((uint32_t)m->mem[addr + 2] << 16)
                | ((uint32_t)m->mem[addr + 3] << 24);
-    lua_pushinteger(L, (int32_t)v);
+    /* Interpret as signed 16.16 fixed-point */
+    int32_t signed_v = (int32_t)v;
+    lua_pushnumber(L, (lua_Number)signed_v / 65536.0);
     return 1;
 }
 static int l_poke4(lua_State *L) {
     TRACE("poke4");
     p8_machine *m = get_machine(L);
     int addr = argi(L, 1, 0);
-    int val  = argi(L, 2, 0);
+    double val = lua_isnoneornil(L, 2) ? 0.0 : (double)lua_tonumber(L, 2);
     if (addr < 0 || addr + 3 >= P8_MEM_SIZE) return 0;
-    m->mem[addr]     = (uint8_t)(val & 0xff);
-    m->mem[addr + 1] = (uint8_t)((val >> 8) & 0xff);
-    m->mem[addr + 2] = (uint8_t)((val >> 16) & 0xff);
-    m->mem[addr + 3] = (uint8_t)((val >> 24) & 0xff);
+    /* Convert float to 16.16 fixed-point */
+    int32_t fixed = (int32_t)(val * 65536.0);
+    uint32_t u = (uint32_t)fixed;
+    m->mem[addr]     = (uint8_t)(u & 0xff);
+    m->mem[addr + 1] = (uint8_t)((u >> 8) & 0xff);
+    m->mem[addr + 2] = (uint8_t)((u >> 16) & 0xff);
+    m->mem[addr + 3] = (uint8_t)((u >> 24) & 0xff);
     return 0;
 }
 
-/* fillp(pat) — set the fill pattern for primitives. We don't yet
- * implement fill patterns in the rasteriser, so this is a no-op
- * stub that prevents crashes. Real fillp support is a Phase 8
- * task — most carts that use it look acceptable without it. */
-static int l_p8_fillp(lua_State *L) { TRACE("fillp"); (void)L; return 0; }
+/* fillp(pat) — set the 16-bit fill pattern and transparency flag.
+ * The pattern is a float where:
+ *   - integer part = 16-bit bitfield (bit 15 = top-left pixel (0,0))
+ *   - fractional .5 bit = transparency flag (second color is transparent)
+ * PICO-8 uses 16.16 fixed-point internally; we approximate with float:
+ * the transparency bit is set when (pat*2) is odd, i.e. when there's
+ * a 0.5 component. Passing no args resets the pattern to 0. */
+static int l_p8_fillp(lua_State *L) {
+    TRACE("fillp");
+    p8_machine *m = get_machine(L);
+    if (lua_isnoneornil(L, 1)) {
+        p8_fillp(m, 0, 0);
+        return 0;
+    }
+    double pat = (double)lua_tonumber(L, 1);
+    int pattern = (int)floor(pat);
+    int transparent = 0;
+    /* Transparency flag: bit 15 of the 16-bit fractional part.
+     * In float terms, that's a 0.5 component in the fractional part. */
+    double frac = pat - floor(pat);
+    if (frac >= 0.5 - 1e-6) transparent = 1;
+    p8_fillp(m, pattern & 0xffff, transparent);
+    return 0;
+}
 
 /* flip() — explicit framebuffer flip. We always present once per
  * frame, so this is a no-op stub. */
@@ -729,10 +774,23 @@ static int l_p8_ovalfill(lua_State *L) {
     return 0;
 }
 
-/* tline — textured line, used by mode-7 / floor effects. Stub for
- * now (returns nothing). Carts that depend on it for gameplay will
- * look wrong but won't crash. */
-static int l_p8_tline(lua_State *L)    { TRACE("tline");    (void)L; return 0; }
+/* tline(x0,y0,x1,y1, mx,my, [mdx=1/8], [mdy=0], [layer=0]) —
+ * textured line drawing for mode-7 floor effects. */
+static int l_p8_tline(lua_State *L) {
+    TRACE("tline");
+    p8_machine *m = get_machine(L);
+    int x0 = argi(L, 1, 0);
+    int y0 = argi(L, 2, 0);
+    int x1 = argi(L, 3, 0);
+    int y1 = argi(L, 4, 0);
+    double mx  = (double)argn0(L, 5);
+    double my  = (double)argn0(L, 6);
+    double mdx = lua_isnoneornil(L, 7) ? 0.125 : (double)lua_tonumber(L, 7);
+    double mdy = lua_isnoneornil(L, 8) ? 0.0   : (double)lua_tonumber(L, 8);
+    int layer  = argi(L, 9, 0);
+    p8_tline(m, x0, y0, x1, y1, mx, my, mdx, mdy, layer);
+    return 0;
+}
 
 /* mapdraw — alias for map (older PICO-8 API name). */
 /* Already covered by the map binding; alias entry below. */
@@ -855,19 +913,17 @@ static int l_cursor(lua_State *L) {
 }
 
 /* --- frame counter, string helpers, audio stubs --------------------- */
-/* t() / time() return seconds since program start. We piggyback on
- * a counter the host runner increments each frame. */
+/* t() / time() return seconds since program start. The host/device
+ * writes elapsed ms into P8_DS_ELAPSED_MS each frame from a real
+ * hardware timer, so this is accurate regardless of target fps. */
 static int l_p8_time(lua_State *L) {
     TRACE("time");
     p8_machine *m = get_machine(L);
-    /* Stash frame count in unused draw-state word 0x5f30..0x5f33 as
-     * a uint32; host runner writes it each frame. */
-    uint32_t frames = (uint32_t)m->mem[P8_DRAWSTATE + 0x34]
-                    | ((uint32_t)m->mem[P8_DRAWSTATE + 0x35] << 8)
-                    | ((uint32_t)m->mem[P8_DRAWSTATE + 0x36] << 16)
-                    | ((uint32_t)m->mem[P8_DRAWSTATE + 0x37] << 24);
-    /* 30 fps assumption for now; the host chooses. */
-    lua_pushnumber(L, (lua_Number)frames / 30.0);
+    uint32_t ms = (uint32_t)m->mem[P8_DS_ELAPSED_MS]
+                | ((uint32_t)m->mem[P8_DS_ELAPSED_MS + 1] << 8)
+                | ((uint32_t)m->mem[P8_DS_ELAPSED_MS + 2] << 16)
+                | ((uint32_t)m->mem[P8_DS_ELAPSED_MS + 3] << 24);
+    lua_pushnumber(L, (lua_Number)ms / 1000.0);
     return 1;
 }
 
@@ -975,11 +1031,66 @@ static int l_p8_printh(lua_State *L) {
     return 0;
 }
 
-/* menuitem, cartdata, dget, dset — stubs. */
+/* menuitem — not yet implemented (would add entries to pause menu).
+ * No-op stub for now; carts that call it continue without errors. */
 static int l_p8_menuitem(lua_State *L) { TRACE("menuitem"); (void)L; return 0; }
-static int l_p8_cartdata(lua_State *L) { TRACE("cartdata"); (void)L; return 0; }
-static int l_p8_dget(lua_State *L)     { TRACE("dget"); lua_pushinteger(L, 0); return 1; }
-static int l_p8_dset(lua_State *L)     { TRACE("dset"); (void)L; return 0; }
+
+/* cartdata(name) — open persistent storage slot identified by name.
+ * The 256-byte region at 0x5e00-0x5eff is loaded with any previously
+ * saved data. Host overrides p8_cartdata_open to implement loading. */
+__attribute__((weak)) void p8_cartdata_open(p8_machine *m, const char *name) {
+    /* Default: zero the cartdata region. Device build overrides. */
+    (void)name;
+    memset(&m->mem[0x5e00], 0, 256);
+}
+__attribute__((weak)) void p8_cartdata_save(p8_machine *m) {
+    /* Default: no-op. Device build overrides to flush to flash. */
+    (void)m;
+}
+
+static int l_p8_cartdata(lua_State *L) {
+    TRACE("cartdata");
+    p8_machine *m = get_machine(L);
+    const char *name = lua_tostring(L, 1);
+    if (!name || !*name) { lua_pushboolean(L, 0); return 1; }
+    p8_cartdata_open(m, name);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* dget(idx) — read slot 0-63 as 16.16 fixed-point (float in Lua 5.2). */
+static int l_p8_dget(lua_State *L) {
+    TRACE("dget");
+    p8_machine *m = get_machine(L);
+    int idx = argi(L, 1, 0);
+    if (idx < 0 || idx >= 64) { lua_pushnumber(L, 0); return 1; }
+    int addr = 0x5e00 + idx * 4;
+    uint32_t v = (uint32_t)m->mem[addr]
+               | ((uint32_t)m->mem[addr + 1] << 8)
+               | ((uint32_t)m->mem[addr + 2] << 16)
+               | ((uint32_t)m->mem[addr + 3] << 24);
+    int32_t sv = (int32_t)v;
+    lua_pushnumber(L, (lua_Number)sv / 65536.0);
+    return 1;
+}
+
+/* dset(idx, val) — write slot 0-63, triggers save. */
+static int l_p8_dset(lua_State *L) {
+    TRACE("dset");
+    p8_machine *m = get_machine(L);
+    int idx = argi(L, 1, 0);
+    if (idx < 0 || idx >= 64) return 0;
+    double val = lua_isnoneornil(L, 2) ? 0.0 : (double)lua_tonumber(L, 2);
+    int32_t fixed = (int32_t)(val * 65536.0);
+    uint32_t u = (uint32_t)fixed;
+    int addr = 0x5e00 + idx * 4;
+    m->mem[addr]     = (uint8_t)(u & 0xff);
+    m->mem[addr + 1] = (uint8_t)((u >> 8) & 0xff);
+    m->mem[addr + 2] = (uint8_t)((u >> 16) & 0xff);
+    m->mem[addr + 3] = (uint8_t)((u >> 24) & 0xff);
+    p8_cartdata_save(m);
+    return 0;
+}
 
 /* reload(dest_addr, src_addr, len, [filename]) — copy bytes from
  * the cart's read-only ROM image into runtime memory. Real PICO-8
@@ -990,9 +1101,33 @@ static int l_p8_dset(lua_State *L)     { TRACE("dset"); (void)L; return 0; }
  * sprites/map/sfx never get modified at runtime unless the cart
  * does so explicitly. A no-op stub is correct for the vast
  * majority of carts. */
+/* reload(dst, src, len, [filename]) — copy bytes from the cart's
+ * read-only ROM image into runtime memory. The filename argument
+ * (cross-cart reload) is ignored; we only have one cart at a time. */
 static int l_p8_reload(lua_State *L) {
     TRACE("reload");
-    (void)L;
+    p8_machine *m = get_machine(L);
+    if (!m->rom) return 0;  /* no ROM loaded */
+    size_t rom_max = m->rom_len ? m->rom_len : P8_ROM_SIZE;
+    /* reload() with no args = reload full ROM region */
+    if (lua_isnoneornil(L, 1) && lua_isnoneornil(L, 2) && lua_isnoneornil(L, 3)) {
+        memcpy(m->mem, m->rom, rom_max);
+        return 0;
+    }
+    int dst = argi(L, 1, 0);
+    int src = argi(L, 2, 0);
+    int len = argi(L, 3, 0);
+    if (len <= 0) return 0;
+    if (dst < 0 || src < 0) return 0;
+    if ((size_t)src + (size_t)len > rom_max) {
+        len = (int)rom_max - src;
+    }
+    if (len <= 0) return 0;
+    if ((size_t)dst + (size_t)len > P8_MEM_SIZE) {
+        len = P8_MEM_SIZE - dst;
+    }
+    if (len <= 0) return 0;
+    memcpy(&m->mem[dst], &m->rom[src], (size_t)len);
     return 0;
 }
 
@@ -1210,8 +1345,8 @@ static const luaL_Reg p8_funcs[] = {
     { "line",     l_line },
     { "rect",     l_rect },
     { "rectfill", l_rectfill },
-    { "rrect",    l_rect },       /* rounded rect — stub as regular rect */
-    { "rrectfill",l_rectfill },   /* rounded rectfill — stub as regular */
+    { "rrect",    l_rrect },
+    { "rrectfill",l_rrectfill },
     { "circ",     l_circ },
     { "circfill", l_circfill },
     { "pal",      l_pal },

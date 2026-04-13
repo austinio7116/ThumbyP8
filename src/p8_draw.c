@@ -7,6 +7,7 @@
  * then we'll inline + viper-port the hot loops in a later pass.
  */
 #include "p8_draw.h"
+#include <math.h>
 #include <stdint.h>
 
 /* --- low-level pixel ops with camera + clip + draw palette ----------- */
@@ -21,20 +22,43 @@ static inline int in_clip(const p8_machine *m, int sx, int sy) {
         && sx >= 0 && sy >= 0 && sx < P8_SCREEN_W && sy < P8_SCREEN_H;
 }
 
+/* Apply fillp pattern at screen position (sx, sy). Color arg `c` may
+ * pack two colors: low nibble = primary (col0), high nibble = secondary
+ * (col1). If pattern bit is 1 at this pixel, use col1 (or skip if
+ * transparency flag is set). Returns -1 if pixel should be skipped,
+ * otherwise returns the final color (0..15). */
+static inline int resolve_fillp(const p8_machine *m, int sx, int sy, int c) {
+    uint16_t pat = (uint16_t)m->mem[P8_DS_FILLPAT_LO]
+                 | ((uint16_t)m->mem[P8_DS_FILLPAT_HI] << 8);
+    if (pat == 0) return c & 0x0f;  /* no pattern: use primary */
+
+    /* Bit 15 = pixel (0,0), bit 0 = pixel (3,3) */
+    int bit = 15 - ((sx & 3) + 4 * (sy & 3));
+    int alt = (pat >> bit) & 1;
+    if (alt) {
+        if (m->mem[P8_DS_FILLPAT_T] & 1) return -1;  /* transparent */
+        return (c >> 4) & 0x0f;  /* secondary */
+    }
+    return c & 0x0f;  /* primary */
+}
+
 /* Plot at world (cart) coordinates with the given color. Applies
- * camera offset, clip rect, and the *draw* palette remap. */
+ * camera offset, clip rect, fill pattern, and draw palette remap. */
 static inline void pset_world(p8_machine *m, int x, int y, int c) {
     int sx = x - p8_camera_x(m);
     int sy = y - p8_camera_y(m);
     if (!in_clip(m, sx, sy)) return;
+    int col = resolve_fillp(m, sx, sy, c);
+    if (col < 0) return;
     /* low nibble = remapped color; high bit of pal entry = transparent
      * (only used by sprite blit, ignored here). */
-    uint8_t mapped = m->mem[P8_DS_DRAW_PAL + (c & 0x0f)] & 0x0f;
+    uint8_t mapped = m->mem[P8_DS_DRAW_PAL + (col & 0x0f)] & 0x0f;
     p8_fb_pset_raw(m, sx, sy, mapped);
 }
 
 /* Plot at *screen* coordinates (used by sprite blit, which already
- * baked the camera transform). Still applies clip + draw palette. */
+ * baked the camera transform). Still applies clip + draw palette.
+ * Does NOT apply fill pattern — sprites don't use fillp. */
 static inline void pset_screen_remapped(p8_machine *m, int sx, int sy, int c) {
     if (!in_clip(m, sx, sy)) return;
     uint8_t mapped = m->mem[P8_DS_DRAW_PAL + (c & 0x0f)] & 0x0f;
@@ -57,7 +81,8 @@ void p8_cls(p8_machine *m, int c) {
 }
 
 void p8_pset(p8_machine *m, int x, int y, int c) {
-    p8_set_pen(m, (uint8_t)(c & 0x0f));
+    /* Pen stores both nibbles (primary + secondary for fill patterns). */
+    p8_set_pen(m, (uint8_t)(c & 0xff));
     pset_world(m, x, y, c);
 }
 
@@ -69,7 +94,7 @@ int p8_pget(const p8_machine *m, int x, int y) {
 }
 
 void p8_color(p8_machine *m, int c) {
-    p8_set_pen(m, (uint8_t)(c & 0x0f));
+    p8_set_pen(m, (uint8_t)(c & 0xff));
 }
 
 void p8_camera(p8_machine *m, int x, int y) {
@@ -116,9 +141,18 @@ void p8_pal_reset(p8_machine *m) {
     m->mem[P8_DS_DRAW_PAL + 0] |= 0x10;  /* color 0 transparent */
 }
 
+/* fillp(pat, transparency) — set the 16-bit fill pattern and
+ * transparency flag. Bits are tested per-pixel: bit 15 = top-left
+ * pixel (0,0), bit 0 = bottom-right (3,3). */
+void p8_fillp(p8_machine *m, int pattern, int transparent) {
+    m->mem[P8_DS_FILLPAT_LO] = (uint8_t)(pattern & 0xff);
+    m->mem[P8_DS_FILLPAT_HI] = (uint8_t)((pattern >> 8) & 0xff);
+    m->mem[P8_DS_FILLPAT_T]  = (uint8_t)(transparent & 1);
+}
+
 /* --- line: classic Bresenham ----------------------------------------- */
 void p8_line(p8_machine *m, int x0, int y0, int x1, int y1, int c) {
-    p8_set_pen(m, (uint8_t)(c & 0x0f));
+    p8_set_pen(m, (uint8_t)(c & 0xff));
     int dx =  (x1 > x0) ? (x1 - x0) : (x0 - x1);
     int dy = -((y1 > y0) ? (y1 - y0) : (y0 - y1));
     int sx = x0 < x1 ? 1 : -1;
@@ -179,6 +213,94 @@ void p8_circ(p8_machine *m, int cx, int cy, int r, int c) {
         y++;
         if (err < 0) err += 2 * y + 1;
         else { x--; err += 2 * (y - x) + 1; }
+    }
+}
+
+/* rrect / rrectfill — rounded rectangle. Corners are quarter-circles
+ * of radius r. The radius is clamped to min(w,h)/2.
+ *
+ * At row y within the corner region (0..r-1), the cut (number of
+ * pixels removed from each side) is:
+ *   cut = r - floor(sqrt(r² - (r - y)²))
+ *
+ * The arc's center is at (r, r) from the outside corner, so the arc
+ * "bulges outward" — at y=0, the whole corner box is cut (cut=r),
+ * and at y=r-1 only ~1 pixel is cut. */
+static int rrect_cut_amount(int r, int row_from_outside) {
+    if (r <= 0) return 0;
+    /* b = distance from arc center to this row */
+    int b = r - row_from_outside;
+    /* max x-offset from arc center such that x² + b² <= r² */
+    int rr = r * r;
+    int a = 0;
+    while ((a + 1) * (a + 1) + b * b <= rr) a++;
+    return r - a;
+}
+
+void p8_rrectfill(p8_machine *m, int x, int y, int w, int h, int r, int c) {
+    if (w <= 0 || h <= 0) return;
+    int max_r = (w < h ? w : h) / 2;
+    if (r > max_r) r = max_r;
+    if (r <= 0) {
+        p8_rectfill(m, x, y, x + w - 1, y + h - 1, c);
+        return;
+    }
+    for (int row = 0; row < h; row++) {
+        int cut = 0;
+        if (row < r) {
+            cut = rrect_cut_amount(r, row);
+        } else if (row >= h - r) {
+            cut = rrect_cut_amount(r, h - 1 - row);
+        }
+        if (cut < 0) cut = 0;
+        if (cut * 2 >= w) cut = (w - 1) / 2;
+        int xl = x + cut;
+        int xr = x + w - 1 - cut;
+        for (int xi = xl; xi <= xr; xi++) {
+            pset_world(m, xi, y + row, c);
+        }
+    }
+}
+
+void p8_rrect(p8_machine *m, int x, int y, int w, int h, int r, int c) {
+    if (w <= 0 || h <= 0) return;
+    int max_r = (w < h ? w : h) / 2;
+    if (r > max_r) r = max_r;
+    if (r <= 0) {
+        p8_rect(m, x, y, x + w - 1, y + h - 1, c);
+        return;
+    }
+    /* Top and bottom straight edges (between the corners) */
+    for (int xi = x + r; xi <= x + w - 1 - r; xi++) {
+        pset_world(m, xi, y, c);
+        pset_world(m, xi, y + h - 1, c);
+    }
+    /* Left and right straight edges (between the corners) */
+    for (int yi = y + r; yi <= y + h - 1 - r; yi++) {
+        pset_world(m, x, yi, c);
+        pset_world(m, x + w - 1, yi, c);
+    }
+    /* Corner outlines: for each corner row, draw the two boundary
+     * pixels (at x = cut and at the horizontal step where cut drops
+     * to the previous row's value). */
+    int prev_cut = r;  /* above row 0, effectively cut = r (nothing drawn) */
+    for (int row = 0; row < r; row++) {
+        int cut = rrect_cut_amount(r, row);
+        if (cut < 0) cut = 0;
+        if (cut >= w / 2) continue;  /* corners meet; nothing to draw */
+        /* Pixel at the current row's edge */
+        pset_world(m, x + cut, y + row, c);
+        pset_world(m, x + w - 1 - cut, y + row, c);
+        pset_world(m, x + cut, y + h - 1 - row, c);
+        pset_world(m, x + w - 1 - cut, y + h - 1 - row, c);
+        /* Horizontal step pixels between prev_cut (exclusive) and cut (exclusive) */
+        for (int xi = cut + 1; xi < prev_cut; xi++) {
+            pset_world(m, x + xi, y + row, c);
+            pset_world(m, x + w - 1 - xi, y + row, c);
+            pset_world(m, x + xi, y + h - 1 - row, c);
+            pset_world(m, x + w - 1 - xi, y + h - 1 - row, c);
+        }
+        prev_cut = cut;
     }
 }
 
@@ -288,6 +410,73 @@ void p8_map(p8_machine *m, int cx, int cy, int sx, int sy, int cw, int ch, int l
             }
             p8_spr(m, n, sx + i * 8, sy + j * 8, 1, 1, 0, 0);
         }
+    }
+}
+
+/* tline — textured line drawing (for mode-7 floor effects).
+ *
+ * Walks from (x0,y0) to (x1,y1) via Bresenham. At each pixel, reads
+ * texture coords (mx,my) in tile-cell units:
+ *   - int(mx), int(my) + tline map offset → lookup sprite via mget
+ *   - (mx fractional * 8), (my fractional * 8) → pixel within sprite
+ * After each pixel, advances mx += mdx, my += mdy.
+ *
+ * Wraps texture coords modulo tlineMapWidth/Height (0 = 256).
+ * layer: only draw from tiles with matching sprite flags (0 = all). */
+void p8_tline(p8_machine *m, int x0, int y0, int x1, int y1,
+              double mx, double my, double mdx, double mdy, int layer) {
+    uint8_t map_w   = m->mem[P8_DS_TLINE_W];
+    uint8_t map_h   = m->mem[P8_DS_TLINE_H];
+    uint8_t map_x   = m->mem[P8_DS_TLINE_X];
+    uint8_t map_y   = m->mem[P8_DS_TLINE_Y];
+    double xmask = (map_w == 0) ? 256.0 : (double)map_w;
+    double ymask = (map_h == 0) ? 256.0 : (double)map_h;
+
+    /* Bresenham walk. At each step, sample and advance texture coords. */
+    int dx =  (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int dy = -((y1 > y0) ? (y1 - y0) : (y0 - y1));
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    int x = x0, y = y0;
+    int safety = 0;
+    for (;;) {
+        /* Wrap texture coords */
+        double wrapped_mx = mx - floor(mx / xmask) * xmask;
+        double wrapped_my = my - floor(my / ymask) * ymask;
+        int tx = (int)floor(wrapped_mx);
+        int ty = (int)floor(wrapped_my);
+        int map_cx = ((int)map_x + tx) & 0x7f;  /* map is 128 wide */
+        int map_cy = ((int)map_y + ty) & 0x3f;  /* map is 64 tall */
+        int spr = p8_mget(m, map_cx, map_cy);
+        if (spr != 0) {
+            int skip = 0;
+            if (layer != 0) {
+                int flags = m->mem[P8_GFF_BASE + spr];
+                if ((flags & layer) == 0) skip = 1;
+            }
+            if (!skip) {
+                /* Pixel within the sprite (8x8 cell) */
+                int px = (int)floor((wrapped_mx - tx) * 8.0) & 7;
+                int py = (int)floor((wrapped_my - ty) * 8.0) & 7;
+                int spr_x = (spr & 0x0f) * 8 + px;
+                int spr_y = (spr >> 4) * 8 + py;
+                uint8_t col = p8_sget(m, spr_x, spr_y);
+                /* Transparency via draw palette high bit */
+                uint8_t pal_entry = m->mem[P8_DS_DRAW_PAL + (col & 0x0f)];
+                if (!(pal_entry & 0x10)) {
+                    /* pset_world applies camera + clip + palette + fillp */
+                    pset_world(m, x, y, col);
+                }
+            }
+        }
+        if (x == x1 && y == y1) break;
+        if (++safety > 1024) break;  /* safety limit */
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x += sx; }
+        if (e2 <= dx) { err += dx; y += sy; }
+        mx += mdx;
+        my += mdy;
     }
 }
 

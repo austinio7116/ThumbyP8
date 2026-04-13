@@ -52,9 +52,30 @@
 #define P8_DS_CURSOR_Y   (P8_DRAWSTATE + 0x27)
 #define P8_DS_CAMERA_X   (P8_DRAWSTATE + 0x28)  /* int16 LE */
 #define P8_DS_CAMERA_Y   (P8_DRAWSTATE + 0x2a)  /* int16 LE */
+#define P8_DS_FILLPAT_LO (P8_DRAWSTATE + 0x31)  /* fill pattern byte 0 (rows 2-3) */
+#define P8_DS_FILLPAT_HI (P8_DRAWSTATE + 0x32)  /* fill pattern byte 1 (rows 0-1) */
+#define P8_DS_FILLPAT_T  (P8_DRAWSTATE + 0x33)  /* fill pattern transparency (bit 0) */
+#define P8_DS_TLINE_W    (P8_DRAWSTATE + 0x38)  /* tline map width (0 = 256) */
+#define P8_DS_TLINE_H    (P8_DRAWSTATE + 0x39)  /* tline map height (0 = 256) */
+#define P8_DS_TLINE_X    (P8_DRAWSTATE + 0x3a)  /* tline map x offset */
+#define P8_DS_TLINE_Y    (P8_DRAWSTATE + 0x3b)  /* tline map y offset */
+/* Elapsed time since cart start, in milliseconds. uint32 LE.
+ * Updated by the host/device runner each frame from a real timer. */
+#define P8_DS_ELAPSED_MS (P8_DRAWSTATE + 0x3c)  /* 4 bytes */
+
+/* Size of the cart ROM image — sprite sheet, map, sprite flags,
+ * music/sfx sections. Anything above 0x4300 is runtime state. */
+#define P8_ROM_SIZE 0x4300
 
 typedef struct p8_machine {
     uint8_t mem[P8_MEM_SIZE];
+
+    /* Pointer to the original cart ROM, preserved for reload().
+     * On device, this points into XIP flash (zero SRAM cost). On
+     * host, it points to a malloc'd copy. NULL = no ROM loaded (
+     * reload() becomes a no-op). */
+    const uint8_t *rom;
+    size_t         rom_len;
 
     /* PICO-8 16-color palette as RGB565, mirroring the default palette.
      * Indexed by the *screen* palette mapping (DS_SCREEN_PAL) at present
@@ -79,7 +100,9 @@ static inline void p8_set_camera(p8_machine *m, int16_t x, int16_t y) {
 }
 
 static inline uint8_t p8_pen(const p8_machine *m) { return m->mem[P8_DS_PEN]; }
-static inline void    p8_set_pen(p8_machine *m, uint8_t c) { m->mem[P8_DS_PEN] = c & 0x0f; }
+/* Pen stores the full byte — low nibble is primary color, high nibble
+ * is secondary color for fill patterns. */
+static inline void    p8_set_pen(p8_machine *m, uint8_t c) { m->mem[P8_DS_PEN] = c; }
 
 /* Apply the draw palette remap (used by drawing primitives). */
 static inline uint8_t p8_draw_remap(const p8_machine *m, uint8_t c) {

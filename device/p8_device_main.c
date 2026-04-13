@@ -52,6 +52,42 @@
  * the previous session's writes survived. */
 static int g_boot_reformatted = 0;
 
+/* Current cart stem — set by the launcher before running the cart,
+ * used by cartdata save/load to build the .sav path. */
+static char g_cart_stem[64] = {0};
+static int  g_cartdata_active = 0;   /* 1 once cartdata() has been called */
+
+/* cartdata save/load — device implementation. Stores the 256 bytes
+ * at 0x5e00-0x5eff in /carts/<stem>.sav. */
+void p8_cartdata_open(p8_machine *m, const char *name) {
+    (void)name;  /* PICO-8 uses name as a namespace; we key by cart stem */
+    g_cartdata_active = 1;
+    /* Zero first */
+    memset(&m->mem[0x5e00], 0, 256);
+    if (g_cart_stem[0] == 0) return;
+    char path[96];
+    snprintf(path, sizeof(path), "/carts/%s.sav", g_cart_stem);
+    FIL f;
+    if (f_open(&f, path, FA_READ) == FR_OK) {
+        UINT br = 0;
+        f_read(&f, &m->mem[0x5e00], 256, &br);
+        f_close(&f);
+    }
+}
+
+void p8_cartdata_save(p8_machine *m) {
+    if (!g_cartdata_active || g_cart_stem[0] == 0) return;
+    char path[96];
+    snprintf(path, sizeof(path), "/carts/%s.sav", g_cart_stem);
+    FIL f;
+    if (f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+        UINT bw = 0;
+        f_write(&f, &m->mem[0x5e00], 256, &bw);
+        f_close(&f);
+        p8_flash_disk_flush();
+    }
+}
+
 /* Forward decl — `scanline` is defined later in this file. */
 static uint16_t scanline[128 * 128];
 
@@ -80,6 +116,13 @@ static void write_frame_count(p8_machine *m, uint32_t fc) {
     m->mem[P8_DRAWSTATE + 0x35] = (uint8_t)((fc >> 8) & 0xff);
     m->mem[P8_DRAWSTATE + 0x36] = (uint8_t)((fc >> 16) & 0xff);
     m->mem[P8_DRAWSTATE + 0x37] = (uint8_t)((fc >> 24) & 0xff);
+}
+
+static void write_elapsed_ms(p8_machine *m, uint32_t ms) {
+    m->mem[P8_DS_ELAPSED_MS + 0] = (uint8_t)(ms & 0xff);
+    m->mem[P8_DS_ELAPSED_MS + 1] = (uint8_t)((ms >> 8) & 0xff);
+    m->mem[P8_DS_ELAPSED_MS + 2] = (uint8_t)((ms >> 16) & 0xff);
+    m->mem[P8_DS_ELAPSED_MS + 3] = (uint8_t)((ms >> 24) & 0xff);
 }
 
 /* Solid-color "boot status" splash. Used for early-stage debug
@@ -703,6 +746,14 @@ int main(void) {
             snprintf(line, sizeof(line), "launch: %s",
                      cart_entries[chosen].name);
             p8_log_to_file(line);
+            /* Record stem (strip .luac extension) for cartdata paths */
+            const char *cn = cart_entries[chosen].name;
+            strncpy(g_cart_stem, cn, sizeof(g_cart_stem) - 1);
+            g_cart_stem[sizeof(g_cart_stem) - 1] = 0;
+            size_t sl = strlen(g_cart_stem);
+            if (sl >= 5 && strcasecmp(g_cart_stem + sl - 5, ".luac") == 0)
+                g_cart_stem[sl - 5] = 0;
+            g_cartdata_active = 0;  /* reset for new cart */
         }
 
         p8_machine_reset(&machine);
@@ -821,10 +872,14 @@ int main(void) {
                 continue;
             }
 
-            /* Copy ROM from XIP flash into machine.mem. */
+            /* Copy ROM from XIP flash into machine.mem. Also point
+             * machine.rom to the XIP flash copy so reload() can read
+             * back the original without any SRAM cost. */
             size_t rom_copy = rom_len;
             if (rom_copy > 0x4300) rom_copy = 0x4300;
             memcpy(machine.mem, rom_xip, rom_copy);
+            machine.rom = (const uint8_t *)rom_xip;
+            machine.rom_len = rom_copy;
 
             /* Load bytecode from XIP. Patched lundump.c detects
              * IS_XIP_ADDR(Z->p) → Proto.code[] stays in flash. */
@@ -909,6 +964,8 @@ int main(void) {
 
         uint32_t frame = 0;
         absolute_time_t next = make_timeout_time_us(frame_us);
+        /* Record cart start time so time()/t() returns accurate seconds. */
+        uint64_t cart_start_us = time_us_64();
 
         /* Run until the user exits via menu, or a Lua error fires. */
         #define VOL_MIN   0
@@ -923,6 +980,8 @@ int main(void) {
 
         while (!return_to_picker) {
             write_frame_count(&machine, frame);
+            write_elapsed_ms(&machine,
+                (uint32_t)((time_us_64() - cart_start_us) / 1000));
 
             uint8_t btn = p8_buttons_read();
             p8_input_begin_frame(&input, btn);

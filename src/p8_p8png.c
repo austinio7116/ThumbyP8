@@ -68,7 +68,9 @@ static void unpack_cart_bytes(const unsigned char *rgba, int w, int h,
  * Our cart memory layout matches PICO-8's exactly (we deliberately
  * use the same offsets), so this is just a memcpy. */
 static void rom_to_machine(p8_machine *m, const unsigned char *cart) {
-    /* Copy ROM (gfx, gff, map, sfx, music). */
+    /* Copy ROM (gfx, gff, map, sfx, music) into runtime memory.
+     * Host callers (p8_p8png_load) need to set m->rom separately
+     * since the cart pointer may not outlive this call. */
     memcpy(&m->mem[0x0000], cart, 0x4300);
 }
 

@@ -70,6 +70,14 @@ static int music_mask = 0;     /* channel mask from music() call */
 static float music_offset = 0; /* global music clock (in speed-1 note units) */
 static float music_length = 0; /* pattern length in same units */
 
+/* Fade state. fade_volume goes from 0..1 as the amplitude multiplier
+ * for all music channels. fade_step is added per sample (+ for fade
+ * in, - for fade out). When fade_step < 0 and fade_volume hits 0,
+ * music stops entirely. */
+static float music_fade_volume = 1.0f;
+static float music_fade_step   = 0.0f;
+static int   music_fade_stop_at_zero = 0;
+
 /* --------- helpers --------------------------------------------------- */
 
 /* Pitch → frequency. Key 33 = A4 = 440 Hz. */
@@ -181,6 +189,9 @@ void p8_audio_init(p8_machine *m) {
     music_mask = 0;
     music_offset = 0;
     music_length = 0;
+    music_fade_volume = 1.0f;
+    music_fade_step = 0.0f;
+    music_fade_stop_at_zero = 0;
 }
 
 static void start_note(int chan) {
@@ -350,14 +361,40 @@ static void music_advance(void) {
 }
 
 void p8_audio_music(int n, int fade_len, int channel_mask) {
-    (void)fade_len;  /* TODO: fade support */
     if (!g_machine) return;
     music_mask = channel_mask;
+
     if (n < 0) {
-        music_start_pattern(-1);
+        /* Stop request. With fade: ramp volume to 0, stop when done. */
+        if (fade_len > 0) {
+            /* Compute per-sample step: we go from current volume to 0
+             * over fade_len ms, which is fade_len * SR / 1000 samples. */
+            float n_samples = (float)fade_len * (float)SR / 1000.0f;
+            if (n_samples < 1.0f) n_samples = 1.0f;
+            music_fade_step = -music_fade_volume / n_samples;
+            music_fade_stop_at_zero = 1;
+        } else {
+            music_fade_volume = 1.0f;
+            music_fade_step = 0;
+            music_fade_stop_at_zero = 0;
+            music_start_pattern(-1);
+        }
         return;
     }
     if (n >= 64) return;
+
+    /* Start request. With fade: start pattern at volume 0 and ramp up. */
+    if (fade_len > 0) {
+        music_fade_volume = 0.0f;
+        float n_samples = (float)fade_len * (float)SR / 1000.0f;
+        if (n_samples < 1.0f) n_samples = 1.0f;
+        music_fade_step = 1.0f / n_samples;
+        music_fade_stop_at_zero = 0;
+    } else {
+        music_fade_volume = 1.0f;
+        music_fade_step = 0;
+        music_fade_stop_at_zero = 0;
+    }
     music_start_pattern(n);
 }
 
@@ -424,6 +461,23 @@ void p8_audio_render(int16_t *out, int n_samples) {
     float music_inc = 1.0f / (float)TICKS_PER_SPEED;  /* per-sample music clock advance */
 
     for (int i = 0; i < n_samples; i++) {
+        /* Advance music fade */
+        if (music_fade_step != 0.0f) {
+            music_fade_volume += music_fade_step;
+            if (music_fade_step > 0 && music_fade_volume >= 1.0f) {
+                music_fade_volume = 1.0f;
+                music_fade_step = 0;
+            } else if (music_fade_step < 0 && music_fade_volume <= 0.0f) {
+                music_fade_volume = 0.0f;
+                music_fade_step = 0;
+                if (music_fade_stop_at_zero) {
+                    music_start_pattern(-1);
+                    music_fade_stop_at_zero = 0;
+                    music_fade_volume = 1.0f;  /* reset for next play */
+                }
+            }
+        }
+
         /* Advance music clock */
         if (music_pat >= 0) {
             music_offset += music_inc;
@@ -445,6 +499,9 @@ void p8_audio_render(int16_t *out, int n_samples) {
             float frac = 1.0f - (float)c->samples_left / (float)c->note_samples;
             float freq, vol;
             apply_effect(c, frac, &freq, &vol);
+
+            /* Music channels respect fade volume */
+            if (c->is_music) vol *= music_fade_volume;
 
             /* Advance phase */
             float phase_inc = freq / (float)SR;

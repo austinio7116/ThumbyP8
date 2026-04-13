@@ -181,18 +181,24 @@ int main(int argc, char **argv) {
     int running = 1;
     int frame_count = 0;
     Uint32 next_tick = SDL_GetTicks();
+    Uint32 start_ms  = SDL_GetTicks();
 
-    /* Write frame counter into draw-state memory so l_p8_time() can
-     * read it without having to plumb a separate pointer. */
-    #define WRITE_FRAMES(m, fc) do {                                  \
-        (m).mem[P8_DRAWSTATE + 0x34] = (uint8_t)((fc) & 0xff);        \
-        (m).mem[P8_DRAWSTATE + 0x35] = (uint8_t)(((fc) >> 8) & 0xff); \
-        (m).mem[P8_DRAWSTATE + 0x36] = (uint8_t)(((fc) >> 16) & 0xff);\
-        (m).mem[P8_DRAWSTATE + 0x37] = (uint8_t)(((fc) >> 24) & 0xff);\
+    /* Write frame counter (legacy, used by some code) and accurate
+     * elapsed ms (used by time()/t()) into draw-state memory. */
+    #define WRITE_TIME(m, fc, ms) do {                                       \
+        (m).mem[P8_DRAWSTATE + 0x34] = (uint8_t)((fc) & 0xff);               \
+        (m).mem[P8_DRAWSTATE + 0x35] = (uint8_t)(((fc) >> 8) & 0xff);        \
+        (m).mem[P8_DRAWSTATE + 0x36] = (uint8_t)(((fc) >> 16) & 0xff);       \
+        (m).mem[P8_DRAWSTATE + 0x37] = (uint8_t)(((fc) >> 24) & 0xff);       \
+        (m).mem[P8_DS_ELAPSED_MS + 0] = (uint8_t)((ms) & 0xff);              \
+        (m).mem[P8_DS_ELAPSED_MS + 1] = (uint8_t)(((ms) >> 8) & 0xff);       \
+        (m).mem[P8_DS_ELAPSED_MS + 2] = (uint8_t)(((ms) >> 16) & 0xff);      \
+        (m).mem[P8_DS_ELAPSED_MS + 3] = (uint8_t)(((ms) >> 24) & 0xff);      \
     } while (0)
 
     while (running) {
-        WRITE_FRAMES(machine, frame_count);
+        uint32_t elapsed_ms = (uint32_t)(SDL_GetTicks() - start_ms);
+        WRITE_TIME(machine, frame_count, elapsed_ms);
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) running = 0;

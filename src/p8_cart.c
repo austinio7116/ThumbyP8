@@ -199,6 +199,14 @@ int p8_cart_load_from_memory(p8_cart *cart, p8_machine *m,
                           &lua, &lua_len, NULL /* no thumbnail */) != 0) {
             return -1;
         }
+        /* Capture ROM for reload(). Freed when cart is unloaded (host
+         * process exit). machine.mem[0..0x4300) was populated by load. */
+        uint8_t *rom_copy = (uint8_t *)malloc(P8_ROM_SIZE);
+        if (rom_copy) {
+            memcpy(rom_copy, m->mem, P8_ROM_SIZE);
+            m->rom = rom_copy;
+            m->rom_len = P8_ROM_SIZE;
+        }
         /* Full PICO-8 → Lua dialect translation:
          * shrinko8 unminify → pre_tokenize → compound rewrite.
          * p8_translate_full takes ownership of lua (frees internally). */
@@ -287,6 +295,17 @@ int p8_cart_load_from_memory(p8_cart *cart, p8_machine *m,
         default: break;
         }
         i = j + 1;
+    }
+
+    /* Capture ROM for reload() — machine.mem[0..0x4300) has been
+     * populated by the decoded gfx/gff/map/sfx/music sections. */
+    {
+        uint8_t *rom_copy = (uint8_t *)malloc(P8_ROM_SIZE);
+        if (rom_copy) {
+            memcpy(rom_copy, m->mem, P8_ROM_SIZE);
+            m->rom = rom_copy;
+            m->rom_len = P8_ROM_SIZE;
+        }
     }
 
     /* Full PICO-8 → Lua dialect translation.
