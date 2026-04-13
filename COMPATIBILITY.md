@@ -1,6 +1,6 @@
 # ThumbyP8 Cart Compatibility
 
-Last updated: 2026-04-12
+Last updated: 2026-04-13
 
 ## Status Key
 - **Playable** — loads, controls work, plays to completion or reasonable extent
@@ -14,9 +14,9 @@ Last updated: 2026-04-12
 |------|--------|-------|
 | 24981 (Mcraft) | Impossible | OOM on device |
 | 49232 | Playable | Working |
-| adelie-0 | Broken | OOM in _init on host; untested on device |
-| age_of_ants-9 | Broken | OOM in _update, then cascading nil errors |
-| air_delivery_1-3 | Broken | Loads but sprites are corrupted |
+| adelie-0 | Broken | OOM during _init |
+| age_of_ants-9 | Broken | OOM during _update |
+| air_delivery_1-3 | Partial | Title + gameplay render; a few sprites show as dark silhouettes (needs investigation on device) |
 | beam4-2 | Playable | Working |
 | celeste | Playable | Fully playable |
 | celeste_classic_2-5 | Broken | Loads but only shows clouds, no gameplay |
@@ -30,51 +30,86 @@ Last updated: 2026-04-12
 | fsgupicozombiegarden121-0 | Broken | Needs mouse input (not supported) |
 | highstakes-2 | Playable | Working |
 | hotwax-5 | Broken | _init runtime error |
-| kalikan_menu-6 | Untested | _init OK on host |
-| mini_pharma-1 | Untested | _init OK on host |
+| kalikan_menu-6 | Untested on device | _init OK on host |
+| mini_pharma-1 | Untested on device | _init OK on host |
 | mossmoss-12 | Broken | OOM in _init |
 | musabanebi-0 | Partial | Runtime nil index on P8SCII glyph key |
-| pck404_512px_under-1 | Partial | Playable but P8SCII chars display as blocks |
-| phoenix08-0 | Untested | _init OK on host |
-| pico_arcade-2 | Untested | _init OK on host |
-| pico_ball-5 | Broken | Audio plays but screen stays black |
-| picohot-0 | Broken | _update60 error: attempt to get length of number |
-| picovalley-2 | Untested | _init OK on host |
-| poom_0-9 | Broken | Colourmap wrong, hangs at level select |
+| pck404_512px_under-1 | Partial | Playable (P8SCII now renders correctly after font fix) |
+| phoenix08-0 | Playable | Stars now single pixels after _ENV metatable fix |
+| pico_arcade-2 | Untested on device | _init OK on host |
+| pico_ball-5 | Partial | Loads after _ENV for-loop fix; gameplay not yet verified on device |
+| picohot-0 | Partial | Loads after P8SCII font + _ENV fixes; some in-game errors may remain |
+| picovalley-2 | Untested on device | _init OK on host |
+| poom_0-9 | Partial | Title renders correctly (secret palette fix); crashes on level load |
 | porklike-2 | Playable | Working (fixed by P8SCII identifier support) |
 | praxis_fighter_x-2 | Broken | OOM during translation on host; untested on device |
-| province-4 | Untested | _init OK on host |
-| rtype-5 | Untested | _init OK on host |
-| ruwukawisa-0 | Untested | _init OK on host |
+| province-4 | Untested on device | _init OK on host |
+| rtype-5 | Partial | Loads and plays after _ENV fix; ERROR on long play (unverified) |
+| ruwukawisa-0 | Playable | Fixed after _ENV metatable leak in foreach |
 | slipways-1 | Broken | OOM during translation on host; hangs on load on device |
-| start_picocraft_1-3 | Untested | _init OK on host |
-| terra_1cart-43 | Broken | Hangs during translation on host |
+| start_picocraft_1-3 | Untested on device | _init OK on host |
+| terra_1cart-43 | Broken | Hangs during translation (LZW decoder issue) |
 | tinygolfpuzzles-1 | Playable | Working |
-| woodworm-0 | Untested | _init OK on host |
+| woodworm-0 | Untested on device | _init OK on host |
 
 ## Summary
 
-- **Playable**: 14 carts
-- **Partial**: 3 carts
-- **Broken**: 12 carts
+- **Playable**: 17 carts
+- **Partial**: 7 carts
+- **Broken**: 8 carts
 - **Impossible**: 1 cart
-- **Untested on device**: 9 carts
+- **Untested on device**: 6 carts
 
 ## Known Limitations
-- Carts using mouse input (fsgupicozombiegarden) won't work — no mouse on Thumby Color
-- P8SCII special characters in strings display as blocks, not glyphs
-- `fillp`, `tline`, `reload` are stubs — affects visual fidelity in many carts
-- `cartdata`/`dget`/`dset` are stubs — no persistent save data
-- No multi-cart support (`load()` won't load other carts)
 
-## Recent Fixes (2026-04-12)
-- Audio: fixed severe distortion from rogue *4 gain multiplier in master volume
-- P8SCII bytes (>=0x80) now work as Lua identifier characters (fixes porklike, others)
-- Host pipeline unified with device (shrinko8 + full PICO-8 dialect translation)
-- API: add(tbl,val,index), count(tbl,val), multi-byte peek/poke
-- Button/arrow glyphs correctly map to button indices 0-5
-- All bitwise ops use 16.16 fixed-point via function calls
-- PXA decompressor: removed 32-iteration limit on back-ref length
-- RNG seeded from hardware timer at cart launch
-- In-game pause menu with volume, FPS toggle, disk/battery info
-- Lobby skipped when carts exist — boots straight to picker
+- Carts using mouse input (e.g. fsgupicozombiegarden) won't work — no mouse on Thumby Color
+- Carts that OOM on a 300KB Lua heap can't run on device (300KB is the safe cap; hitting this with complex games is unavoidable)
+- Arpeggio audio effects (fx 6 and 7) are silent — most music still sounds recognizable
+- `extcmd`, `cstore`, `run`, `reset` etc. are no-ops (intentional for single-cart device)
+- `menuitem()` is a no-op (custom pause menu entries not supported)
+- Numerics use IEEE float, not PICO-8's 16.16 fixed-point — precision differs in low bits; some physics-heavy carts may drift
+
+## Recent Fixes
+
+### 2026-04-13
+- `_ENV` compatibility: source rewriter handles `local _ENV = X`, `local a, _ENV = A, X`, `for _ENV in EXPR do`, and `function(_ENV)` patterns. Injects `_ENV = __p8_env(_ENV)` so bare identifiers fall through to globals.
+- Host `dump_ppm` now routes through `p8_machine_present` — host screenshots match device LCD including secret palette.
+- `tonum("42")` now returns the number 42 (was returning the string "42" unchanged because `lua_isnumber` returns true for numeric strings).
+- `rrect` / `rrectfill` implemented with proper quarter-circle corners.
+- `reload()` implemented (preserves ROM in XIP flash, zero SRAM cost on device).
+- `cartdata`, `dget`, `dset` implemented with `.sav` files on device.
+- `fillp(pat)` implemented, including 4x4 pattern + primary/secondary color + transparency.
+- `tline` implemented for mode-7 floor effects.
+- `btnp()` autorepeat (15-frame delay, 4-frame rate), with "ignore held button from last scene" logic to prevent carry-over.
+- `time()` / `t()` now returns accurate elapsed seconds from hardware timer instead of frame-count / 30fps.
+- `music(n, fade_len)` fade-in and fade-out implemented.
+- `pal(table, p)` table form and `pal(nil)` reset form.
+- `palt(N)` bitmask form.
+- P8SCII glyphs 128..255 render as proper 7x5 bitmaps (was a fallback block).
+- PICO-8 secret palette (colors 128..143) supported in `p8_machine_present`.
+
+### 2026-04-12
+- Audio: fixed severe distortion from rogue `*4` gain multiplier in master volume.
+- P8SCII bytes (≥0x80) work as Lua identifier characters — fixes porklike and others.
+- Host pipeline unified with device (shrinko8 + full PICO-8 dialect translation).
+- API: `add(tbl,val,index)`, `count(tbl,val)`, multi-byte `peek`/`poke`.
+- Button/arrow glyphs correctly map to button indices 0-5.
+- All bitwise ops use 16.16 fixed-point via function calls.
+- PXA decompressor: removed 32-iteration limit on back-ref length.
+- RNG seeded from hardware timer at cart launch.
+- In-game pause menu with volume, FPS toggle, disk/battery info.
+- Lobby skipped when carts exist — boots straight to picker.
+
+## Known unresolved errors
+
+From the fuzz harness (30s per cart with random input):
+
+- **adelie-0, age_of_ants-9, delunky102-0, mossmoss-12**: OOM during gameplay — heap cap.
+- **24981 (Mcraft)**: OOM.
+- **pico_ball-5**: fix for `circ` nil via for-loop `_ENV` rewrite applied but not verified on device.
+- **musabanebi-0**: `attempt to index field '?' (a nil value)` — P8SCII glyph used as table key that isn't populated.
+- **praxis_fighter_x-2, slipways-1**: OOM during translation — cart too large for translator's working memory.
+- **terra_1cart-43**: translation hangs — suspected LZW decoder pathology.
+- Some carts throw `attempt to perform arithmetic on global 'X' (a nil value)` — cart code expects a global that it never sets; may be a PICO-8 quirk or a real cart bug (not yet investigated per-cart).
+
+See `NEXT_STEPS.md` for the plan to triage these systematically.
