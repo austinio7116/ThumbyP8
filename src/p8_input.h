@@ -30,21 +30,26 @@ typedef struct p8_input {
     uint8_t prev;  /* bitmask, previous frame */
     /* Per-button hold counter. 0 when released, 1+ = frames held. */
     uint8_t hold[P8_BTN_COUNT];
+    /* Per-button "ignore" mask. Bits set here suppress ALL btnp
+     * events (including autorepeat) until the button is released.
+     * Used to swallow a press carried over from the lobby/picker
+     * into the cart's first frame. */
+    uint8_t ignore;
     /* Per-button btnp flag for this frame (bitmask). Computed by
      * begin_frame based on edge + autorepeat logic. */
     uint8_t p_flag;
 } p8_input;
 
-/* Reset input state. All buttons start unpressed; but if a button
- * is already held on reset, we mark it as "long held" so btnp doesn't
- * immediately fire (prevents phantom presses on scene transitions). */
+/* Reset input state. Any currently-held button is marked "ignore"
+ * so btnp won't fire (including autorepeat) until the user releases
+ * and re-presses it. This prevents an A press used to select a cart
+ * in the picker from bleeding through into the cart's _update(). */
 static inline void p8_input_reset(p8_input *in) {
-    in->cur = 0xff;
-    in->prev = 0xff;
+    in->cur = 0;
+    in->prev = 0;
     in->p_flag = 0;
-    for (int i = 0; i < P8_BTN_COUNT; i++) {
-        in->hold[i] = P8_BTN_REPEAT_DELAY + 1;  /* already past initial delay */
-    }
+    in->ignore = 0xff;  /* ignore everything until released+repressed */
+    for (int i = 0; i < P8_BTN_COUNT; i++) in->hold[i] = 0;
 }
 
 /* Called by the host runner once per frame, BEFORE _update() runs. */
@@ -55,10 +60,16 @@ static inline void p8_input_begin_frame(p8_input *in, uint8_t new_state) {
     for (int i = 0; i < P8_BTN_COUNT; i++) {
         int pressed = (new_state >> i) & 1;
         if (!pressed) {
+            /* Released: clear hold and clear ignore for this button */
             in->hold[i] = 0;
+            in->ignore &= ~(1 << i);
             continue;
         }
         /* pressed this frame */
+        if (in->ignore & (1 << i)) {
+            /* Button has been held since reset — suppress all events */
+            continue;
+        }
         in->hold[i]++;
         if (in->hold[i] == 1) {
             /* Initial press — fire btnp */
