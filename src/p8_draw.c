@@ -192,9 +192,62 @@ void p8_rect(p8_machine *m, int x0, int y0, int x1, int y1, int c) {
 void p8_rectfill(p8_machine *m, int x0, int y0, int x1, int y1, int c) {
     if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
     if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
-    for (int y = y0; y <= y1; y++) {
-        for (int x = x0; x <= x1; x++) {
-            pset_world(m, x, y, c);
+
+    /* Pre-clip to visible region */
+    int camx = p8_camera_x(m), camy = p8_camera_y(m);
+    int sx0 = x0 - camx, sy0 = y0 - camy;
+    int sx1 = x1 - camx, sy1 = y1 - camy;
+    int cx0 = m->mem[P8_DS_CLIP_X0], cy0 = m->mem[P8_DS_CLIP_Y0];
+    int cx1 = m->mem[P8_DS_CLIP_X1], cy1 = m->mem[P8_DS_CLIP_Y1];
+    if (sx0 < cx0) sx0 = cx0;  if (sy0 < cy0) sy0 = cy0;
+    if (sx1 >= cx1) sx1 = cx1 - 1;  if (sy1 >= cy1) sy1 = cy1 - 1;
+    if (sx0 < 0) sx0 = 0;  if (sy0 < 0) sy0 = 0;
+    if (sx1 >= P8_SCREEN_W) sx1 = P8_SCREEN_W - 1;
+    if (sy1 >= P8_SCREEN_H) sy1 = P8_SCREEN_H - 1;
+    if (sx0 > sx1 || sy0 > sy1) return;
+
+    /* Check for fill pattern */
+    uint16_t pat = (uint16_t)m->mem[P8_DS_FILLPAT_LO]
+                 | ((uint16_t)m->mem[P8_DS_FILLPAT_HI] << 8);
+
+    uint8_t *fb = &m->mem[P8_FB_BASE];
+
+    if (pat == 0) {
+        /* No pattern — solid fill. Apply draw palette once. */
+        uint8_t mapped = m->mem[P8_DS_DRAW_PAL + (c & 0x0f)] & 0x0f;
+        for (int sy = sy0; sy <= sy1; sy++) {
+            int row = sy << 6;
+            for (int sx = sx0; sx <= sx1; sx++) {
+                int addr = row + (sx >> 1);
+                if (sx & 1)
+                    fb[addr] = (fb[addr] & 0x0f) | (mapped << 4);
+                else
+                    fb[addr] = (fb[addr] & 0xf0) | mapped;
+            }
+        }
+    } else {
+        /* With pattern — per-pixel fillp check. */
+        uint8_t col0 = m->mem[P8_DS_DRAW_PAL + (c & 0x0f)] & 0x0f;
+        uint8_t col1 = m->mem[P8_DS_DRAW_PAL + ((c >> 4) & 0x0f)] & 0x0f;
+        int transp = m->mem[P8_DS_FILLPAT_T] & 1;
+        for (int sy = sy0; sy <= sy1; sy++) {
+            int row = sy << 6;
+            for (int sx = sx0; sx <= sx1; sx++) {
+                int bit = 15 - ((sx & 3) + 4 * (sy & 3));
+                int alt = (pat >> bit) & 1;
+                uint8_t mapped;
+                if (alt) {
+                    if (transp) continue;
+                    mapped = col1;
+                } else {
+                    mapped = col0;
+                }
+                int addr = row + (sx >> 1);
+                if (sx & 1)
+                    fb[addr] = (fb[addr] & 0x0f) | (mapped << 4);
+                else
+                    fb[addr] = (fb[addr] & 0xf0) | mapped;
+            }
         }
     }
 }
@@ -338,18 +391,58 @@ void p8_spr(p8_machine *m, int n, int x, int y, int w, int h, int flip_x, int fl
     int dx0 = x - p8_camera_x(m);
     int dy0 = y - p8_camera_y(m);
 
-    for (int py = 0; py < ph; py++) {
+    /* Pre-clip: compute the visible sub-rect to avoid per-pixel checks */
+    int cx0 = m->mem[P8_DS_CLIP_X0];
+    int cy0 = m->mem[P8_DS_CLIP_Y0];
+    int cx1 = m->mem[P8_DS_CLIP_X1];
+    int cy1 = m->mem[P8_DS_CLIP_Y1];
+
+    int vis_x0 = dx0 < cx0 ? cx0 - dx0 : 0;
+    int vis_y0 = dy0 < cy0 ? cy0 - dy0 : 0;
+    int vis_x1 = (dx0 + pw > cx1 ? cx1 - dx0 : pw);
+    int vis_y1 = (dy0 + ph > cy1 ? cy1 - dy0 : ph);
+    if (vis_x0 >= vis_x1 || vis_y0 >= vis_y1) return;
+
+    /* Screen bounds */
+    if (dx0 + vis_x1 > P8_SCREEN_W) vis_x1 = P8_SCREEN_W - dx0;
+    if (dy0 + vis_y1 > P8_SCREEN_H) vis_y1 = P8_SCREEN_H - dy0;
+    if (dx0 + vis_x0 < 0) vis_x0 = -dx0;
+    if (dy0 + vis_y0 < 0) vis_y0 = -dy0;
+    if (vis_x0 >= vis_x1 || vis_y0 >= vis_y1) return;
+
+    /* Pre-build palette LUT: pal[c] = mapped color, or 0xff = transparent. */
+    uint8_t pal_lut[16];
+    for (int i = 0; i < 16; i++) {
+        uint8_t e = m->mem[P8_DS_DRAW_PAL + i];
+        pal_lut[i] = (e & 0x10) ? 0xff : (e & 0x0f);
+    }
+
+    uint8_t *gfx = &m->mem[P8_GFX_BASE];
+    uint8_t *fb  = &m->mem[P8_FB_BASE];
+
+    for (int py = vis_y0; py < vis_y1; py++) {
         int sy = sheet_y + (flip_y ? (ph - 1 - py) : py);
-        for (int px = 0; px < pw; px++) {
+        int dy = dy0 + py;
+        int fb_row = dy << 6;  /* dy * 64 (128 pixels / 2 nibbles per byte) */
+        int gfx_row = sy << 6;
+
+        for (int px = vis_x0; px < vis_x1; px++) {
             int sx = sheet_x + (flip_x ? (pw - 1 - px) : px);
-            uint8_t col = p8_sget(m, sx, sy);
-            uint8_t pal_entry = m->mem[P8_DS_DRAW_PAL + (col & 0x0f)];
-            if (pal_entry & 0x10) continue;  /* transparent */
-            uint8_t mapped = pal_entry & 0x0f;
+
+            /* Inline 4bpp read from sprite sheet */
+            int gaddr = gfx_row + (sx >> 1);
+            uint8_t col = (sx & 1) ? (gfx[gaddr] >> 4) : (gfx[gaddr] & 0x0f);
+
+            uint8_t mapped = pal_lut[col];
+            if (mapped == 0xff) continue;  /* transparent */
+
+            /* Inline 4bpp write to framebuffer */
             int dx = dx0 + px;
-            int dy = dy0 + py;
-            if (in_clip(m, dx, dy)) {
-                p8_fb_pset_raw(m, dx, dy, mapped);
+            int faddr = fb_row + (dx >> 1);
+            if (dx & 1) {
+                fb[faddr] = (fb[faddr] & 0x0f) | (mapped << 4);
+            } else {
+                fb[faddr] = (fb[faddr] & 0xf0) | mapped;
             }
         }
     }
@@ -363,22 +456,55 @@ void p8_sspr(p8_machine *m,
     int dx0 = dx - p8_camera_x(m);
     int dy0 = dy - p8_camera_y(m);
 
-    /* Nearest-neighbor scaling: for each destination pixel, sample
-     * the source. Cheap and correct; we'll DDA-optimize later. */
-    for (int py = 0; py < dh; py++) {
-        int src_y = sy + (py * sh) / dh;
-        if (flip_y) src_y = sy + sh - 1 - ((py * sh) / dh);
-        for (int px = 0; px < dw; px++) {
-            int src_x = sx + (px * sw) / dw;
-            if (flip_x) src_x = sx + sw - 1 - ((px * sw) / dw);
-            uint8_t col = p8_sget(m, src_x, src_y);
-            uint8_t pal_entry = m->mem[P8_DS_DRAW_PAL + (col & 0x0f)];
-            if (pal_entry & 0x10) continue;
-            uint8_t mapped = pal_entry & 0x0f;
+    /* Pre-clip */
+    int cx0 = m->mem[P8_DS_CLIP_X0];
+    int cy0 = m->mem[P8_DS_CLIP_Y0];
+    int cx1 = m->mem[P8_DS_CLIP_X1];
+    int cy1 = m->mem[P8_DS_CLIP_Y1];
+
+    int vis_x0 = dx0 < cx0 ? cx0 - dx0 : 0;
+    int vis_y0 = dy0 < cy0 ? cy0 - dy0 : 0;
+    int vis_x1 = dx0 + dw > cx1 ? cx1 - dx0 : dw;
+    int vis_y1 = dy0 + dh > cy1 ? cy1 - dy0 : dh;
+    if (dx0 + vis_x1 > P8_SCREEN_W) vis_x1 = P8_SCREEN_W - dx0;
+    if (dy0 + vis_y1 > P8_SCREEN_H) vis_y1 = P8_SCREEN_H - dy0;
+    if (dx0 + vis_x0 < 0) vis_x0 = -dx0;
+    if (dy0 + vis_y0 < 0) vis_y0 = -dy0;
+    if (vis_x0 >= vis_x1 || vis_y0 >= vis_y1) return;
+
+    /* Pre-build palette LUT */
+    uint8_t pal_lut[16];
+    for (int i = 0; i < 16; i++) {
+        uint8_t e = m->mem[P8_DS_DRAW_PAL + i];
+        pal_lut[i] = (e & 0x10) ? 0xff : (e & 0x0f);
+    }
+
+    uint8_t *gfx = &m->mem[P8_GFX_BASE];
+    uint8_t *fb  = &m->mem[P8_FB_BASE];
+
+    for (int py = vis_y0; py < vis_y1; py++) {
+        int src_y = sy + (flip_y ? (dh - 1 - py) : py) * sh / dh;
+        int ddy = dy0 + py;
+        int fb_row = ddy << 6;
+
+        for (int px = vis_x0; px < vis_x1; px++) {
+            int src_x = sx + (flip_x ? (dw - 1 - px) : px) * sw / dw;
+            if ((unsigned)src_x >= 128 || (unsigned)src_y >= 128) continue;
+
+            /* Inline 4bpp read */
+            int gaddr = (src_y << 6) + (src_x >> 1);
+            uint8_t col = (src_x & 1) ? (gfx[gaddr] >> 4) : (gfx[gaddr] & 0x0f);
+
+            uint8_t mapped = pal_lut[col];
+            if (mapped == 0xff) continue;
+
+            /* Inline 4bpp write */
             int ddx = dx0 + px;
-            int ddy = dy0 + py;
-            if (in_clip(m, ddx, ddy)) {
-                p8_fb_pset_raw(m, ddx, ddy, mapped);
+            int faddr = fb_row + (ddx >> 1);
+            if (ddx & 1) {
+                fb[faddr] = (fb[faddr] & 0x0f) | (mapped << 4);
+            } else {
+                fb[faddr] = (fb[faddr] & 0xf0) | mapped;
             }
         }
     }

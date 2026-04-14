@@ -92,26 +92,25 @@ void p8_machine_reset(p8_machine *m) {
 }
 
 void p8_machine_present(const p8_machine *m, uint16_t *dst) {
-    /* Walk the 8 KB framebuffer two pixels at a time. Each framebuffer
-     * nibble indexes into the screen palette (16 bytes at 0x5f10).
-     * Each screen palette entry is an 8-bit system-palette index:
-     * PICO-8 masks it with 0x8f (docs say: "indices are masked with
-     * 0x8f"), so bit 7 selects the secret palette range (128..143)
-     * while bits 0..3 pick within the 16-color group. Bits 4..6 are
-     * ignored. */
-    const uint8_t *src = &m->mem[P8_FB_BASE];
+    /* Pre-build a 256-entry LUT: for each possible framebuffer byte
+     * (containing two 4-bit pixels), store the two RGB565 values.
+     * This collapses the screen palette indirection + secret palette
+     * selection + RGB565 lookup into a single table fetch per byte. */
     const uint8_t *spal = &m->mem[P8_DS_SCREEN_PAL];
     const uint16_t *pal565 = m->rgb565_palette;
 
+    /* Map each 4-bit screen-palette entry to its RGB565 value once. */
+    uint16_t col16[16];
+    for (int i = 0; i < 16; i++) {
+        uint8_t s = spal[i] & 0x8f;
+        uint8_t idx = (s & 0x0f) | ((s & 0x80) >> 3);
+        col16[i] = pal565[idx];
+    }
+
+    const uint8_t *src = &m->mem[P8_FB_BASE];
     for (int i = 0; i < P8_FB_BYTES; i++) {
         uint8_t b = src[i];
-        /* Map spal entry (masked to 0x8f) to our 0..31 layout:
-         * bit 7 set → secret palette at offset 16. */
-        uint8_t s_lo = spal[b & 0x0f] & 0x8f;
-        uint8_t s_hi = spal[(b >> 4) & 0x0f] & 0x8f;
-        uint8_t lo = (s_lo & 0x0f) | ((s_lo & 0x80) >> 3);  /* 0..15 or 16..31 */
-        uint8_t hi = (s_hi & 0x0f) | ((s_hi & 0x80) >> 3);
-        dst[i * 2 + 0] = pal565[lo];
-        dst[i * 2 + 1] = pal565[hi];
+        dst[i * 2 + 0] = col16[b & 0x0f];
+        dst[i * 2 + 1] = col16[b >> 4];
     }
 }
