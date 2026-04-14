@@ -111,6 +111,45 @@ static p8_input       input;
 static p8_cart_entry  cart_entries[P8_PICKER_MAX_CARTS];
 static FATFS          fs;
 
+/* Draw text at 2× scale using the P8 font. Each pixel becomes a 2×2 block. */
+extern const uint16_t font_lo[128];
+extern const uint8_t  font_hi[128][5];
+
+static void font_draw_2x(p8_machine *m, const char *text, int x, int y, int c) {
+    for (; *text; text++) {
+        unsigned char ch = (unsigned char)*text;
+        if (ch >= 128) {
+            const uint8_t *g = font_hi[ch - 128];
+            for (int row = 0; row < 5; row++) {
+                uint8_t bits = g[row];
+                for (int col = 0; col < 7; col++) {
+                    if (bits & (1 << col)) {
+                        p8_pset(m, x + col*2,   y + row*2,   c);
+                        p8_pset(m, x + col*2+1, y + row*2,   c);
+                        p8_pset(m, x + col*2,   y + row*2+1, c);
+                        p8_pset(m, x + col*2+1, y + row*2+1, c);
+                    }
+                }
+            }
+            x += 16;
+        } else {
+            uint16_t g = font_lo[ch];
+            for (int row = 0; row < 5; row++) {
+                int bits = (g >> (row * 3)) & 0x7;
+                for (int col = 0; col < 3; col++) {
+                    if (bits & (1 << col)) {
+                        p8_pset(m, x + col*2,   y + row*2,   c);
+                        p8_pset(m, x + col*2+1, y + row*2,   c);
+                        p8_pset(m, x + col*2,   y + row*2+1, c);
+                        p8_pset(m, x + col*2+1, y + row*2+1, c);
+                    }
+                }
+            }
+            x += 8;  /* 4px char × 2 = 8px */
+        }
+    }
+}
+
 /* Load a 128×128 BMP from a file path into a uint16_t scanline buffer.
  * Returns 0 on success, -1 on failure. */
 #include "p8_bmp.h"
@@ -305,33 +344,51 @@ static int g_progress_max  = 10;
 static const char *g_progress_stem = "";
 static const char g_spinner[] = "|/-\\";
 
+/* bg_sl: if non-NULL, used as dimmed thumbnail background. The
+ * text is drawn in the 4bpp framebuffer, present'd, then composited
+ * onto the background where text pixels are non-black. */
+static uint16_t *g_progress_bg = NULL;
+
 static void screen_log(p8_machine *m, uint16_t *sl, const char *stage) {
-    p8_machine_reset(m);
+    /* Don't call p8_machine_reset — it zeros ALL of machine.mem
+     * including 0x8000 where we stashed the thumbnail. Just clear
+     * the framebuffer and reset all drawing state manually. */
     p8_camera(m, 0, 0);
+    p8_clip(m, 0, 0, 128, 128, 1);
+    p8_pal_reset(m);
+    p8_fillp(m, 0, 0);  /* clear fill pattern */
     p8_cls(m, 0);
 
-    /* Title */
-    p8_font_draw(m, "ThumbyP8", 40, 4, 6);
-    p8_rectfill(m, 0, 14, 127, 14, 5);
-
     /* Cart name */
-    p8_font_draw(m, g_progress_stem, 4, 20, 7);
+    p8_font_draw(m, g_progress_stem, 4, 4, 7);
 
     /* Stage with spinner */
     char spin_line[48];
     snprintf(spin_line, sizeof(spin_line), "%c %s",
              g_spinner[g_progress_step % 4], stage);
-    p8_font_draw(m, spin_line, 4, 34, 10);
+    p8_font_draw(m, spin_line, 4, 14, 10);
 
     /* Progress bar */
-    p8_rect(m, 14, 56, 113, 64, 5);
+    p8_rect(m, 14, 112, 113, 120, 5);
     int fill = (g_progress_step * 96) / g_progress_max;
     if (fill > 96) fill = 96;
     if (fill > 0) {
-        p8_rectfill(m, 16, 58, 15 + fill, 62, 11);
+        p8_rectfill(m, 16, 114, 15 + fill, 118, 11);
     }
 
+    /* Present 4bpp framebuffer (text + progress bar) to RGB565.
+     * Then composite onto thumbnail: replace black pixels (cls
+     * background) with the dimmed thumbnail. All colored text and
+     * progress bar pixels are preserved. */
     p8_machine_present(m, sl);
+    if (g_progress_bg) {
+        for (int px = 0; px < 128 * 128; px++) {
+            if (sl[px] == 0x0000) {
+                sl[px] = g_progress_bg[px];
+            }
+        }
+    }
+
     p8_lcd_wait_idle();
     p8_lcd_present(sl);
     g_progress_step++;
@@ -347,6 +404,7 @@ static int convert_one_cart(const char *stem, p8_machine *m,
 
     g_progress_step = 0;
     g_progress_stem = stem;
+    g_progress_bg = NULL;  /* no thumbnail yet */
     screen_log(m, sl, stem);
     screen_log(m, sl, "opening file...");
 
@@ -384,6 +442,56 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     /* Save BMP FIRST — sl still has the thumbnail from p8_p8png_load */
     p8_bmp_save_128(bmp_path, sl);
 
+    /* Extract title + author from first two comment lines of Lua source.
+     * PICO-8 convention: first `-- title` then `-- by author`. Save to
+     * a .meta file for the picker to display. */
+    {
+        char meta_path[80];
+        snprintf(meta_path, sizeof(meta_path), "/carts/%s.meta", stem);
+        char title[64] = {0}, author[64] = {0};
+        const char *p = lua_src;
+        /* Skip leading whitespace/newlines */
+        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+        /* First comment line = title */
+        if (p[0] == '-' && p[1] == '-') {
+            p += 2;
+            while (*p == ' ' || *p == '\t') p++;
+            int ti = 0;
+            while (*p && *p != '\n' && *p != '\r' && ti < 62) title[ti++] = *p++;
+            title[ti] = 0;
+            /* Trim trailing whitespace */
+            while (ti > 0 && (title[ti-1] == ' ' || title[ti-1] == '\t')) title[--ti] = 0;
+        }
+        /* Skip to next line */
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+        /* Second comment line = author */
+        if (p[0] == '-' && p[1] == '-') {
+            p += 2;
+            while (*p == ' ' || *p == '\t') p++;
+            int ai = 0;
+            while (*p && *p != '\n' && *p != '\r' && ai < 62) author[ai++] = *p++;
+            author[ai] = 0;
+            while (ai > 0 && (author[ai-1] == ' ' || author[ai-1] == '\t')) author[--ai] = 0;
+        }
+        /* Write meta file */
+        FIL mf;
+        if (f_open(&mf, meta_path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+            UINT bw;
+            f_write(&mf, title, strlen(title), &bw);
+            f_write(&mf, "\n", 1, &bw);
+            f_write(&mf, author, strlen(author), &bw);
+            f_write(&mf, "\n", 1, &bw);
+            f_close(&mf);
+        }
+        /* Use title as progress label if available */
+        if (title[0]) {
+            static char title_buf[64];
+            strncpy(title_buf, title, sizeof(title_buf) - 1);
+            g_progress_stem = title_buf;
+        }
+    }
+
     /* Save ROM — m->mem has the cart data from p8_p8png_load */
     if (f_open(&f, rom_path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
         UINT bw;
@@ -391,7 +499,19 @@ static int convert_one_cart(const char *stem, p8_machine *m,
         f_close(&f);
     }
 
-    /* Now safe to use screen_log (which overwrites sl) */
+    /* sl currently holds the thumbnail (RGB565) from p8_p8png_load.
+     * Copy it to machine.mem[0x8000] and dim it for use as progress
+     * background. No file I/O needed — data is already in memory. */
+    {
+        uint16_t *bg = (uint16_t *)&m->mem[0x8000];
+        memcpy(bg, sl, 128 * 128 * 2);
+        for (int px = 0; px < 128*128; px++) {
+            uint16_t c = bg[px];
+            bg[px] = ((c >> 1) & 0x7BEF);  /* 50% brightness */
+        }
+        g_progress_bg = bg;
+    }
+
     {
         char info[40];
         snprintf(info, sizeof(info), "lua: %d bytes", (int)lua_len);
@@ -519,8 +639,11 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
 
     if (!found) return 0;
 
-    /* Convert — screen_log calls inside convert_one_cart will show
-     * the animated progress bar. */
+    /* Initialize machine ONCE before conversion starts. screen_log
+     * doesn't call p8_machine_reset (to preserve thumbnail in
+     * machine.mem[0x8000]), so we must do it here. */
+    p8_machine_reset(m);
+
     int rc = convert_one_cart(stem, m, sl);
     if (rc != 0) {
         char buf[80];
@@ -534,33 +657,10 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
             f_close(&ff);
     }
 
-    /* Reboot to reclaim heap for next cart */
+    /* Reboot to reclaim heap for next cart. Final status already shown
+     * by the last screen_log ("DONE OK" or error) on the thumbnail bg. */
     p8_flash_disk_flush();
-
-    /* Show result with thumbnail if conversion succeeded */
-    if (rc == 0) {
-        char bmp_path[80];
-        snprintf(bmp_path, sizeof(bmp_path), "/carts/%s.bmp", stem);
-        if (load_bmp_file(bmp_path, sl) == 0) {
-            /* Dim the thumbnail slightly */
-            for (int px = 0; px < 128*128; px++) {
-                uint16_t c = sl[px];
-                sl[px] = ((c >> 1) & 0x7BEF);
-            }
-            p8_lcd_wait_idle();
-            p8_lcd_present(sl);
-            sleep_ms(800);
-        }
-    }
-    p8_machine_reset(m);
-    p8_camera(m, 0, 0);
-    p8_cls(m, 0);
-    p8_font_draw(m, rc == 0 ? "converted" : "FAILED", 4, 56, rc == 0 ? 11 : 8);
-    p8_font_draw(m, stem, 4, 66, 7);
-    p8_machine_present(m, sl);
-    p8_lcd_wait_idle();
-    p8_lcd_present(sl);
-    sleep_ms(500);
+    sleep_ms(1000);  /* brief pause so user sees the final status */
 
     watchdog_reboot(0, 0, 0);
     while (1) tight_loop_contents();
@@ -667,60 +767,76 @@ static void wait_for_carts(void) {
             blink++;
             p8_machine_reset(&machine);
             p8_camera(&machine, 0, 0);
-            p8_cls(&machine, 0);  /* black background */
+            p8_cls(&machine, 0);
 
-            /* Title — centred, bright */
-            p8_font_draw(&machine, "ThumbyP8", 36, 10, 7);
+            /* Clean layout: double-size title, orange accents */
 
-            /* Separator line */
-            p8_line(&machine, 20, 20, 108, 20, 5);
+            /* Title — 2× size, centered, orange */
+            font_draw_2x(&machine, "ThumbyP8", 16, 6, 9);
+            p8_line(&machine, 0, 18, 127, 18, 9);
 
-            /* Cart count */
-            if (n_carts > 0) {
-                char line[40];
-                snprintf(line, sizeof(line), "%d game%s",
-                         n_carts, n_carts == 1 ? "" : "s");
-                int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
-                p8_font_draw(&machine, line, lx, 26, 6);
-            }
+            /* Footer line — raised to fit 2× text below */
+            p8_line(&machine, 0, 113, 127, 113, 9);
 
-            /* Status area — centered vertically */
+            int busy = p8_flash_disk_dirty();
+
             switch (state) {
             case LOBBY_MOUNTED:
             case LOBBY_FLUSHING: {
-                int busy = p8_flash_disk_dirty();
                 if (busy) {
-                    /* Writes in progress — show activity */
+                    /* Saving flash — critical, don't interrupt */
                     int on = (blink & 1);
-                    p8_font_draw(&machine, "saving...", 40, 50, on ? 9 : 2);
-                    p8_font_draw(&machine, "do not power off", 8, 62, 8);
+                    font_draw_2x(&machine, "saving", 28, 40, on ? 9 : 2);
+                    p8_font_draw(&machine, "please wait...", 24, 62, 6);
+                    p8_font_draw(&machine, "do not power off", 12, 74, 8);
+                } else if (n_carts > 0) {
+                    /* Games available */
+                    char line[40];
+                    snprintf(line, sizeof(line), "%d game%s loaded",
+                             n_carts, n_carts == 1 ? "" : "s");
+                    int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
+                    p8_font_draw(&machine, line, lx, 40, 11);
+                    /* Play triangle */
+                    for (int row = 0; row < 16; row++) {
+                        int half = row < 8 ? row : 15 - row;
+                        p8_rectfill(&machine, 58, 54 + row, 58 + half, 54 + row, 11);
+                    }
+                    p8_font_draw(&machine, "add more via usb", 14, 84, 5);
+                    font_draw_2x(&machine, "A to play", 16, 116, 10);
                 } else {
-                    /* USB connected, idle */
-                    p8_font_draw(&machine, "usb connected", 24, 50, 11);
-                }
-
-                /* Instructions for new users */
-                p8_line(&machine, 20, 78, 108, 78, 5);
-                p8_font_draw(&machine, "drop .p8.png carts", 8, 84, 6);
-                p8_font_draw(&machine, "onto usb drive", 20, 94, 6);
-
-                if (n_carts > 0 && !busy) {
-                    p8_font_draw(&machine, "press A to start", 14, 112, 10);
+                    /* No games — first-time setup */
+                    font_draw_2x(&machine, "welcome", 16, 30, 7);
+                    p8_line(&machine, 20, 48, 108, 48, 5);
+                    p8_font_draw(&machine, "connect to a pc", 14, 58, 7);
+                    p8_font_draw(&machine, "drop .p8.png game", 10, 70, 7);
+                    p8_font_draw(&machine, "files onto the drive", 6, 80, 7);
+                    p8_font_draw(&machine, "then eject or reboot", 6, 96, 5);
                 }
                 break;
             }
             case LOBBY_READY: {
                 if (n_carts > 0) {
-                    p8_circfill(&machine, 64, 52, 3, 11);
-                    p8_font_draw(&machine, "ready", 48, 64, 11);
-                    p8_font_draw(&machine, "press A to start", 14, 112, 10);
+                    /* Ready to play */
+                    /* Play triangle icon */
+                    for (int row = 0; row < 16; row++) {
+                        int half = row < 8 ? row : 15 - row;
+                        p8_rectfill(&machine, 58, 30 + row, 58 + half, 30 + row, 11);
+                    }
+                    char line[40];
+                    snprintf(line, sizeof(line), "%d game%s loaded",
+                             n_carts, n_carts == 1 ? "" : "s");
+                    int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
+                    p8_font_draw(&machine, line, lx, 56, 11);
+                    p8_font_draw(&machine, "connect usb to add more", 2, 72, 5);
+                    font_draw_2x(&machine, "A to play", 16, 116, 10);
                 } else {
-                    p8_font_draw(&machine, "no games found", 16, 50, 8);
-                    p8_line(&machine, 20, 62, 108, 62, 5);
-                    p8_font_draw(&machine, "connect usb and", 12, 72, 6);
-                    p8_font_draw(&machine, "drop .p8.png files", 8, 82, 6);
-                    p8_font_draw(&machine, "into /carts/", 28, 92, 6);
-                    p8_font_draw(&machine, "then reboot", 32, 108, 5);
+                    /* No games at all */
+                    font_draw_2x(&machine, "no", 48, 32, 8);
+                    font_draw_2x(&machine, "games", 32, 48, 8);
+                    p8_line(&machine, 20, 66, 108, 66, 5);
+                    p8_font_draw(&machine, "connect usb cable", 10, 74, 7);
+                    p8_font_draw(&machine, "drop .p8.png files", 8, 84, 7);
+                    p8_font_draw(&machine, "into /carts/ folder", 8, 94, 7);
                 }
                 break;
             }

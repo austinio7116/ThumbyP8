@@ -238,16 +238,28 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
             /* Present thumbnail first, then overlay on the RGB565 scanline. */
             p8_machine_present(m, scanline);
 
-            /* Dim top and bottom bars for overlay */
-            for (int y = 0; y < 12; y++)
+            /* DOOM-style overlay bars: black with orange divider lines */
+            #define OVL_ORANGE 0xFD20
+            #define OVL_GREEN  0x07E0
+            #define OVL_WHITE  0xFFFF
+            #define OVL_GREY   0xC618  /* PICO-8 light-grey */
+
+            /* Top bar: 50% darken + orange accent line */
+            for (int y = 0; y < 10; y++)
                 for (int x = 0; x < 128; x++) {
                     int a = y * 128 + x;
-                    scanline[a] = ((scanline[a] >> 2) & 0x39E7);
+                    scanline[a] = ((scanline[a] >> 1) & 0x7BEF);
                 }
-            for (int y = 115; y < 128; y++)
+            for (int x = 0; x < 128; x++)
+                scanline[9 * 128 + x] = OVL_ORANGE;
+
+            /* Bottom bar: orange accent + 50% darken */
+            for (int x = 0; x < 128; x++)
+                scanline[113 * 128 + x] = OVL_ORANGE;
+            for (int y = 114; y < 128; y++)
                 for (int x = 0; x < 128; x++) {
                     int a = y * 128 + x;
-                    scanline[a] = ((scanline[a] >> 2) & 0x39E7);
+                    scanline[a] = ((scanline[a] >> 1) & 0x7BEF);
                 }
 
             /* Draw text directly into RGB565 scanline using font data */
@@ -288,29 +300,57 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                 char counter[16];
                 snprintf(counter, sizeof(counter), "%d / %d", sel + 1, n_entries);
                 int cw = (int)strlen(counter) * P8_FONT_CELL_W;
-                SCAN_TEXT(counter, (128 - cw) / 2, 3, 0xFFFF);
+                SCAN_TEXT(counter, (128 - cw) / 2, 2, OVL_GREY);
             }
 
-            /* Cart name (centered in bottom bar) */
+            /* Cart title + author from .meta file, or filename as fallback */
             {
-                char display[P8_PICKER_NAME_MAX];
-                strncpy(display, entries[sel].name, sizeof(display) - 1);
-                display[sizeof(display) - 1] = 0;
-                size_t dL = strlen(display);
-                if (dL >= 5 && strcasecmp(display + dL - 5, ".luac") == 0) {
-                    display[dL - 5] = 0;
-                    dL -= 5;
+                char title[64] = {0}, author[64] = {0};
+                /* Build .meta path from cart name */
+                char meta_path[80];
+                char stem[P8_PICKER_NAME_MAX];
+                strncpy(stem, entries[sel].name, sizeof(stem) - 1);
+                stem[sizeof(stem) - 1] = 0;
+                size_t sL = strlen(stem);
+                if (sL >= 5 && strcasecmp(stem + sL - 5, ".luac") == 0)
+                    stem[sL - 5] = 0;
+                snprintf(meta_path, sizeof(meta_path), "/carts/%s.meta", stem);
+                FIL mf;
+                if (f_open(&mf, meta_path, FA_READ) == FR_OK) {
+                    char buf[128];
+                    UINT br = 0;
+                    f_read(&mf, buf, sizeof(buf) - 1, &br);
+                    f_close(&mf);
+                    buf[br] = 0;
+                    /* Line 1 = title, line 2 = author */
+                    char *nl = strchr(buf, '\n');
+                    if (nl) {
+                        *nl = 0;
+                        strncpy(title, buf, sizeof(title) - 1);
+                        char *a = nl + 1;
+                        char *nl2 = strchr(a, '\n');
+                        if (nl2) *nl2 = 0;
+                        strncpy(author, a, sizeof(author) - 1);
+                    } else {
+                        strncpy(title, buf, sizeof(title) - 1);
+                    }
                 }
-                int text_px = (int)dL * P8_FONT_CELL_W;
-                int xp = (128 - text_px) / 2;
-                if (xp < 1) xp = 1;
-                SCAN_TEXT(display, xp, 119, 0xFFFF);
+                /* Fallback to filename if no meta */
+                if (!title[0]) strncpy(title, stem, sizeof(title) - 1);
+
+                /* Display: title on line 1, author (if any) on line 2 */
+                int tw = (int)strlen(title) * P8_FONT_CELL_W;
+                SCAN_TEXT(title, (128 - tw) / 2, 116, OVL_ORANGE);
+                if (author[0]) {
+                    int aw = (int)strlen(author) * P8_FONT_CELL_W;
+                    SCAN_TEXT(author, (128 - aw) / 2, 122, OVL_GREY);
+                }
             }
 
             /* Nav arrows on the middle edges */
             if (n_entries > 1) {
-                SCAN_TEXT("\x8b", 1, 60, 0xC618);    /* ⬅ left arrow, grey */
-                SCAN_TEXT("\x91", 119, 60, 0xC618);   /* ➡ right arrow, grey */
+                SCAN_TEXT("\x8b", 1, 60, OVL_GREY);
+                SCAN_TEXT("\x91", 119, 60, OVL_GREY);
             }
 
             #undef SCAN_TEXT
