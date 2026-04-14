@@ -279,11 +279,15 @@ static int l_spr(lua_State *L) {
     int n  = argi(L, 1, 0);
     int x  = argi(L, 2, 0);
     int y  = argi(L, 3, 0);
-    int w  = argi(L, 4, 1);
-    int h  = argi(L, 5, 1);
+    /* w/h can be fractional (e.g. 0.5 = 4 pixels). Convert to pixel
+     * dimensions here rather than in p8_spr, to preserve precision. */
+    lua_Number wf = lua_isnoneornil(L, 4) ? 1.0 : lua_tonumber(L, 4);
+    lua_Number hf = lua_isnoneornil(L, 5) ? 1.0 : lua_tonumber(L, 5);
+    int pw = (int)(wf * 8);  /* pixel width */
+    int ph = (int)(hf * 8);  /* pixel height */
     int fx = lua_toboolean(L, 6);
     int fy = lua_toboolean(L, 7);
-    p8_spr(m, n, x, y, w, h, fx, fy);
+    p8_spr_px(m, n, x, y, pw, ph, fx, fy);
     return 0;
 }
 static int l_sspr(lua_State *L) {

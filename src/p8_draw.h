@@ -55,9 +55,10 @@ void p8_fillp(p8_machine *m, int pattern, int transparent);
 void p8_tline(p8_machine *m, int x0, int y0, int x1, int y1,
               double mx, double my, double mdx, double mdy, int layer);
 
-/* Sprite blit. n is sprite index (0..255 for first page, etc.).
- * w/h are in cells (8 px each); flip_x/flip_y are 0/1. */
-void p8_spr(p8_machine *m, int n, int x, int y, int w, int h, int flip_x, int flip_y);
+/* Sprite blit. n is sprite index. pw/ph are in PIXELS (not cells).
+ * Supports sub-tile sizes (e.g. pw=4 for a half-tile).
+ * flip_x/flip_y are 0/1. */
+void p8_spr_px(p8_machine *m, int n, int x, int y, int pw, int ph, int flip_x, int flip_y);
 
 /* Stretched sprite blit (nearest-neighbor). */
 void p8_sspr(p8_machine *m,

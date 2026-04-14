@@ -415,12 +415,12 @@ void p8_circfill(p8_machine *m, int cx, int cy, int r, int c) {
 
 /* --- sprite blit ----------------------------------------------------- */
 /* Pulls 8×8 cells from the sprite sheet at (n*8 % 128, n/16 * 8). */
-void p8_spr(p8_machine *m, int n, int x, int y, int w, int h, int flip_x, int flip_y) {
-    if (w <= 0 || h <= 0) return;
+/* Sprite blit with pixel dimensions (supports fractional tile sizes).
+ * pw/ph are in pixels (e.g. 4 for a half-tile). */
+void p8_spr_px(p8_machine *m, int n, int x, int y, int pw, int ph, int flip_x, int flip_y) {
+    if (pw <= 0 || ph <= 0) return;
     int sheet_x = (n & 0x0f) * 8;
     int sheet_y = (n >> 4) * 8;
-    int pw = w * 8;
-    int ph = h * 8;
     int dx0 = x - p8_camera_x(m);
     int dy0 = y - p8_camera_y(m);
 
