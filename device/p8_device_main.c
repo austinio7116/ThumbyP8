@@ -780,67 +780,80 @@ static void wait_for_carts(void) {
 
             int busy = p8_flash_disk_dirty();
 
+            /* Helper: center 1× text */
+            #define CTX(s) ((128 - (int)strlen(s) * P8_FONT_CELL_W) / 2)
+            /* Helper: center 2× text (each char = 8px wide) */
+            #define CTX2(s) ((128 - (int)strlen(s) * 8) / 2)
+
+            /* USB icon macro (centered at x=57..70) */
+            #define DRAW_USB_ICON(iy) do { \
+                p8_rectfill(&machine, 57, (iy), 70, (iy)+18, 6); \
+                p8_rectfill(&machine, 60, (iy)-4, 67, (iy), 6); \
+                p8_rectfill(&machine, 62, (iy)-6, 65, (iy)-4, 7); \
+                p8_rectfill(&machine, 61, (iy)+4, 62, (iy)+8, 0); \
+                p8_rectfill(&machine, 65, (iy)+4, 66, (iy)+8, 0); \
+                p8_line(&machine, 63, (iy)+18, 63, (iy)+22, 6); \
+                p8_line(&machine, 64, (iy)+18, 64, (iy)+22, 6); \
+            } while (0)
+
             switch (state) {
             case LOBBY_MOUNTED:
             case LOBBY_FLUSHING: {
                 if (busy) {
-                    /* Saving flash — critical, don't interrupt */
                     int on = (blink & 1);
-                    font_draw_2x(&machine, "saving", 28, 40, on ? 9 : 2);
-                    p8_font_draw(&machine, "please wait...", 24, 62, 6);
-                    p8_font_draw(&machine, "do not power off", 12, 74, 8);
+                    font_draw_2x(&machine, "saving", CTX2("saving"), 40, on ? 9 : 2);
+                    p8_font_draw(&machine, "please wait...", CTX("please wait..."), 62, 6);
+                    p8_font_draw(&machine, "do not power off", CTX("do not power off"), 74, 8);
                 } else if (n_carts > 0) {
-                    /* Games available */
+                    int iy = 30;  /* icon top */
+                    if (tud_mounted()) {
+                        p8_font_draw(&machine, "pc connected", CTX("pc connected"), 24, 6);
+                        iy = 36;  /* push icon down */
+                    }
+                    DRAW_USB_ICON(iy);
                     char line[40];
                     snprintf(line, sizeof(line), "%d game%s loaded",
                              n_carts, n_carts == 1 ? "" : "s");
-                    int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
-                    p8_font_draw(&machine, line, lx, 40, 11);
-                    /* Play triangle */
-                    for (int row = 0; row < 16; row++) {
-                        int half = row < 8 ? row : 15 - row;
-                        p8_rectfill(&machine, 58, 54 + row, 58 + half, 54 + row, 11);
-                    }
-                    p8_font_draw(&machine, "add more via usb", 14, 84, 5);
-                    font_draw_2x(&machine, "A to play", 16, 116, 10);
+                    p8_font_draw(&machine, line, CTX(line), iy + 30, 11);
+                    p8_font_draw(&machine, "add more via usb", CTX("add more via usb"), iy + 44, 5);
+                    font_draw_2x(&machine, "A to play", CTX2("A to play"), 116, 10);
                 } else {
-                    /* No games — first-time setup */
-                    font_draw_2x(&machine, "welcome", 16, 30, 7);
+                    font_draw_2x(&machine, "welcome", CTX2("welcome"), 30, 7);
                     p8_line(&machine, 20, 48, 108, 48, 5);
-                    p8_font_draw(&machine, "connect to a pc", 14, 58, 7);
-                    p8_font_draw(&machine, "drop .p8.png game", 10, 70, 7);
-                    p8_font_draw(&machine, "files onto the drive", 6, 80, 7);
-                    p8_font_draw(&machine, "then eject or reboot", 6, 96, 5);
+                    if (tud_mounted()) {
+                        p8_font_draw(&machine, "pc connected!", CTX("pc connected!"), 58, 11);
+                    } else {
+                        p8_font_draw(&machine, "connect to a pc", CTX("connect to a pc"), 58, 7);
+                    }
+                    p8_font_draw(&machine, "drop .p8.png game", CTX("drop .p8.png game"), 70, 7);
+                    p8_font_draw(&machine, "files onto the drive", CTX("files onto the drive"), 80, 7);
+                    p8_font_draw(&machine, "then eject or reboot", CTX("then eject or reboot"), 96, 5);
                 }
                 break;
             }
             case LOBBY_READY: {
                 if (n_carts > 0) {
-                    /* Ready to play */
-                    /* Play triangle icon */
-                    for (int row = 0; row < 16; row++) {
-                        int half = row < 8 ? row : 15 - row;
-                        p8_rectfill(&machine, 58, 30 + row, 58 + half, 30 + row, 11);
-                    }
+                    DRAW_USB_ICON(28);
                     char line[40];
                     snprintf(line, sizeof(line), "%d game%s loaded",
                              n_carts, n_carts == 1 ? "" : "s");
-                    int lx = (128 - (int)strlen(line) * P8_FONT_CELL_W) / 2;
-                    p8_font_draw(&machine, line, lx, 56, 11);
-                    p8_font_draw(&machine, "connect usb to add more", 2, 72, 5);
-                    font_draw_2x(&machine, "A to play", 16, 116, 10);
+                    p8_font_draw(&machine, line, CTX(line), 58, 11);
+                    p8_font_draw(&machine, "connect usb to add more", CTX("connect usb to add more"), 72, 5);
+                    font_draw_2x(&machine, "A to play", CTX2("A to play"), 116, 10);
                 } else {
-                    /* No games at all */
-                    font_draw_2x(&machine, "no", 48, 32, 8);
-                    font_draw_2x(&machine, "games", 32, 48, 8);
-                    p8_line(&machine, 20, 66, 108, 66, 5);
-                    p8_font_draw(&machine, "connect usb cable", 10, 74, 7);
-                    p8_font_draw(&machine, "drop .p8.png files", 8, 84, 7);
-                    p8_font_draw(&machine, "into /carts/ folder", 8, 94, 7);
+                    font_draw_2x(&machine, "no games", CTX2("no games"), 38, 8);
+                    p8_line(&machine, 20, 56, 108, 56, 5);
+                    p8_font_draw(&machine, "connect usb cable", CTX("connect usb cable"), 66, 7);
+                    p8_font_draw(&machine, "drop .p8.png files", CTX("drop .p8.png files"), 76, 7);
+                    p8_font_draw(&machine, "into /carts/ folder", CTX("into /carts/ folder"), 86, 7);
                 }
                 break;
             }
             }
+
+            #undef CTX
+            #undef CTX2
+            #undef DRAW_USB_ICON
 
             p8_machine_present(&machine, scanline);
             p8_lcd_wait_idle();

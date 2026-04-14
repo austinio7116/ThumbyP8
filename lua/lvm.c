@@ -346,6 +346,14 @@ void luaV_objlen (lua_State *L, StkId ra, const TValue *rb) {
       setnvalue(ra, cast_num(tsvalue(rb)->len));
       return;
     }
+    case LUA_TNUMBER: {
+      /* PICO-8 compat: #number returns length of its string form. */
+      char buf[32];
+      lua_Number n = nvalue(rb);
+      int len = lua_number2str(buf, n);
+      setnvalue(ra, cast_num(len));
+      return;
+    }
     default: {  /* try metamethod */
       tm = luaT_gettmbyobj(L, rb, TM_LEN);
       if (ttisnil(tm))  /* no metamethod? */
@@ -517,11 +525,15 @@ void luaV_finishOp (lua_State *L) {
            luai_threadyield(L); )
 
 
+/* PICO-8 compat: nil coerces to 0 in arithmetic. Standard Lua errors. */
+#define p8_numval(v) (ttisnumber(v) ? nvalue(v) : (lua_Number)0)
+#define p8_isnum(v)  (ttisnumber(v) || ttisnil(v))
+
 #define arith_op(op,tm) { \
         TValue *rb = RKB(i); \
         TValue *rc = RKC(i); \
-        if (ttisnumber(rb) && ttisnumber(rc)) { \
-          lua_Number nb = nvalue(rb), nc = nvalue(rc); \
+        if (p8_isnum(rb) && p8_isnum(rc)) { \
+          lua_Number nb = p8_numval(rb), nc = p8_numval(rc); \
           setnvalue(ra, op(L, nb, nc)); \
         } \
         else { Protect(luaV_arith(L, ra, rb, rc, tm)); } }
@@ -665,8 +677,8 @@ void luaV_execute (lua_State *L) {
       )
       vmcase(OP_UNM,
         TValue *rb = RB(i);
-        if (ttisnumber(rb)) {
-          lua_Number nb = nvalue(rb);
+        if (p8_isnum(rb)) {
+          lua_Number nb = p8_numval(rb);
           setnvalue(ra, luai_numunm(L, nb));
         }
         else {
