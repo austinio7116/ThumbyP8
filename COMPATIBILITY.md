@@ -19,7 +19,7 @@ Last updated: 2026-04-14
 | air_delivery_1-3 | Playable | Working |
 | beam4-2 | Playable | Working |
 | celeste | Playable | Working |
-| celeste_classic_2-5 | Broken | Loads but only shows clouds, no gameplay |
+| celeste_classic_2-5 | Playable | Working (C native px9_decomp fix) |
 | combopool-0 | Playable | Working |
 | delunky102-0 | Playable | Working |
 | digger-2 | Playable | Working |
@@ -54,9 +54,9 @@ Last updated: 2026-04-14
 
 ## Summary
 
-- **Playable**: 24 carts
+- **Playable**: 25 carts
 - **Partial**: 5 carts
-- **Broken**: 9 carts
+- **Broken**: 8 carts
 - **Impossible**: 1 cart
 
 ## Known Limitations
