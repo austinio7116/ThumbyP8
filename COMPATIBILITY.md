@@ -16,49 +16,49 @@ Last updated: 2026-04-13
 | 49232 | Playable | Working |
 | adelie-0 | Broken | OOM during _init |
 | age_of_ants-9 | Broken | OOM during _update |
-| air_delivery_1-3 | Partial | Title + gameplay render; a few sprites show as dark silhouettes (needs investigation on device) |
+| air_delivery_1-3 | Working | Some performance issues |
 | beam4-2 | Playable | Working |
-| celeste | Playable | Fully playable |
+| celeste | Playable | Working |
 | celeste_classic_2-5 | Broken | Loads but only shows clouds, no gameplay |
 | combopool-0 | Playable | Working |
-| delunky102-0 | Playable | Working (same seed every time) |
+| delunky102-0 | Playable | Working |
 | digger-2 | Playable | Working |
 | dominion_ex-4 | Playable | Working |
 | fafomajoje-0 (Dungeon) | Playable | Working |
 | flipknight-0 | Playable | Working |
-| fromrust_a-4 | Partial | Loads, crashes during gameplay |
+| fromrust_a-4 | Broken | Does not load |
 | fsgupicozombiegarden121-0 | Broken | Needs mouse input (not supported) |
 | highstakes-2 | Playable | Working |
-| hotwax-5 | Broken | _init runtime error |
-| kalikan_menu-6 | Untested on device | _init OK on host |
-| mini_pharma-1 | Untested on device | _init OK on host |
+| hotwax-5 | Partial | Loads but gets stuck on game start |
+| kalikan_menu-6 | Partial | Level load issue |
+| mini_pharma-1 | Partial | Loads but not playable |
 | mossmoss-12 | Broken | OOM in _init |
-| musabanebi-0 | Playable (device) | Plays fine; fuzz harness triggers a latent cart bug (nil index on P8SCII field) under random-input stress |
-| pck404_512px_under-1 | Partial | Playable (P8SCII now renders correctly after font fix) |
-| phoenix08-0 | Playable | Stars now single pixels after _ENV metatable fix |
-| pico_arcade-2 | Untested on device | _init OK on host |
-| pico_ball-5 | Partial | Loads after _ENV for-loop fix; gameplay not yet verified on device |
+| musabanebi-0 | Playable | Working |
+| pck404_512px_under-1 | Partial | Working |
+| phoenix08-0 | Playable | Working |
+| pico_arcade-2 | Partial | Loads but no games start |
+| pico_ball-5 | Partial | Audio - but not loading graphics |
 | picohot-0 | Partial | Loads after P8SCII font + _ENV fixes; some in-game errors may remain |
-| picovalley-2 | Untested on device | _init OK on host |
+| picovalley-2 | Playable | Working - not played much |
 | poom_0-9 | Partial | Title renders correctly (secret palette fix); crashes on level load |
-| porklike-2 | Playable | Working (fixed by P8SCII identifier support) |
-| praxis_fighter_x-2 | Broken | OOM during translation on host; untested on device |
-| province-4 | Playable (device) | Plays fine; fuzz harness triggers compare-nil on an uninitialized-under-chaotic-input variable |
-| rtype-5 | Partial | Loads and plays after _ENV fix; ERROR on long play (unverified) |
-| ruwukawisa-0 | Playable | Fixed after _ENV metatable leak in foreach; fuzz can trigger an uninitialized-global error that doesn't occur in real play |
-| slipways-1 | Broken | OOM during translation on host; hangs on load on device |
-| start_picocraft_1-3 | Untested on device | _init OK on host |
-| terra_1cart-43 | Broken | Hangs during translation (LZW decoder issue) |
+| porklike-2 | Playable | Working |
+| praxis_fighter_x-2 | Broken | OOM on  load |
+| province-4 | Playable | Plays fine |
+| rtype-5 | Playable | Some performance issues |
+| ruwukawisa-0 | Playable | Some performance issues |
+| slipways-1 | Broken | OOM - angs on load on device |
+| start_picocraft_1-3 | Broken | Hangs on load |
+| terra_1cart-43 | Broken | Hangs on load |
 | tinygolfpuzzles-1 | Playable | Working |
-| woodworm-0 | Untested on device | _init OK on host |
+| woodworm-0 | Untested on device | Graphical issues |
 
 ## Summary
 
-- **Playable**: 16 carts
-- **Partial**: 7 carts
-- **Broken**: 9 carts
+- **Playable**: 18 carts
+- **Partial**: 8 carts
+- **Broken**: 11 carts
 - **Impossible**: 1 cart
-- **Untested on device**: 6 carts
+- **Untested on device**: 1 cart
 
 ## Known Limitations
 
