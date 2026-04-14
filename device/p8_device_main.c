@@ -298,24 +298,43 @@ static int dump_file_writer(lua_State *L, const void *p, size_t sz, void *ud) {
     return 0;
 }
 
-/* On-screen log: accumulates lines on a persistent black background.
- * When a hardfault hits, the last line visible shows where it died. */
-static int g_log_y;
+/* Conversion progress display: animated spinner + filling progress bar.
+ * Each screen_log call advances the progress one step. */
+static int g_progress_step = 0;
+static int g_progress_max  = 10;
+static const char *g_progress_stem = "";
+static const char g_spinner[] = "|/-\\";
 
-static void screen_log(p8_machine *m, uint16_t *sl, const char *msg) {
-    if (g_log_y == 0) {
-        /* First call — clear screen */
-        p8_machine_reset(m);
-        p8_camera(m, 0, 0);
-        p8_cls(m, 0);
-        g_log_y = 2;
+static void screen_log(p8_machine *m, uint16_t *sl, const char *stage) {
+    p8_machine_reset(m);
+    p8_camera(m, 0, 0);
+    p8_cls(m, 0);
+
+    /* Title */
+    p8_font_draw(m, "ThumbyP8", 40, 4, 6);
+    p8_rectfill(m, 0, 14, 127, 14, 5);
+
+    /* Cart name */
+    p8_font_draw(m, g_progress_stem, 4, 20, 7);
+
+    /* Stage with spinner */
+    char spin_line[48];
+    snprintf(spin_line, sizeof(spin_line), "%c %s",
+             g_spinner[g_progress_step % 4], stage);
+    p8_font_draw(m, spin_line, 4, 34, 10);
+
+    /* Progress bar */
+    p8_rect(m, 14, 56, 113, 64, 5);
+    int fill = (g_progress_step * 96) / g_progress_max;
+    if (fill > 96) fill = 96;
+    if (fill > 0) {
+        p8_rectfill(m, 16, 58, 15 + fill, 62, 11);
     }
-    p8_font_draw(m, msg, 2, g_log_y, 7);
-    g_log_y += 7;
-    if (g_log_y > 122) g_log_y = 2;  /* wrap if too many lines */
+
     p8_machine_present(m, sl);
     p8_lcd_wait_idle();
     p8_lcd_present(sl);
+    g_progress_step++;
 }
 
 static int convert_one_cart(const char *stem, p8_machine *m,
@@ -326,7 +345,8 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     snprintf(rom_path,  sizeof(rom_path),  "/carts/%s.rom", stem);
     snprintf(bmp_path,  sizeof(bmp_path),  "/carts/%s.bmp", stem);
 
-    g_log_y = 0;  /* reset log screen for this cart */
+    g_progress_step = 0;
+    g_progress_stem = stem;
     screen_log(m, sl, stem);
     screen_log(m, sl, "opening file...");
 
@@ -499,20 +519,8 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
 
     if (!found) return 0;
 
-    /* Convert this one cart — show a clean status screen */
-    p8_machine_reset(m);
-    p8_camera(m, 0, 0);
-    p8_cls(m, 0);
-    p8_font_draw(m, "ThumbyP8", 40, 4, 6);
-    p8_rectfill(m, 0, 18, 127, 18, 5);  /* divider line */
-    p8_font_draw(m, stem, 4, 24, 7);
-    p8_font_draw(m, "converting...", 4, 36, 10);
-    /* Simple progress bar frame */
-    p8_rect(m, 4, 50, 123, 58, 5);
-    p8_machine_present(m, sl);
-    p8_lcd_wait_idle();
-    p8_lcd_present(sl);
-
+    /* Convert — screen_log calls inside convert_one_cart will show
+     * the animated progress bar. */
     int rc = convert_one_cart(stem, m, sl);
     if (rc != 0) {
         char buf[80];
