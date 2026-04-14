@@ -1075,72 +1075,27 @@ int main(void) {
                 menu_was_pressed = 0;
             }
 
-            /* --- Update + Draw with auto-frameskip -------------------------
-             *
-             * For 60fps carts (_update60): if the previous frame took
-             * longer than 16.7ms, call _update60 multiple times before
-             * a single _draw, so game logic keeps correct speed even
-             * when we can't render every frame. This matches real
-             * PICO-8's behavior.
-             *
-             * For 30fps carts (_update): no frameskip — one update,
-             * one draw per cycle.
-             */
-            {
-                /* How many update ticks to run this cycle. For 60fps
-                 * carts, accumulate debt based on actual elapsed time. */
-                static uint64_t last_frame_us = 0;
-                uint64_t now = time_us_64();
-                int updates_needed = 1;
-
-                if (has_update60 && last_frame_us > 0) {
-                    uint64_t elapsed = now - last_frame_us;
-                    /* Each update tick = 16667µs (1/60s). How many
-                     * ticks fit in the elapsed time? Cap at 4 to
-                     * prevent spiral-of-death. */
-                    updates_needed = (int)(elapsed / 16667);
-                    if (updates_needed < 1) updates_needed = 1;
-                    if (updates_needed > 4) updates_needed = 4;
-                }
-                last_frame_us = now;
-
-                /* Run updates */
-                for (int u = 0; u < updates_needed; u++) {
-                    lua_getglobal(vm.L, update_fn);
-                    if (lua_isfunction(vm.L, -1)) {
-                        if ((frame % 30) == 0 && u == 0) {
-                            char tag[32];
-                            snprintf(tag, sizeof(tag), "frame %lu",
-                                     (unsigned long)frame);
-                            p8_log_ring(tag);
-                        }
-                        if (lua_pcall(vm.L, 0, 0, 0) != LUA_OK) {
-                            const char *m = lua_tostring(vm.L, -1);
-                            snprintf(err_msg, sizeof(err_msg),
-                                     "%s: %s", update_fn,
-                                     m ? m : "(no msg)");
-                            lua_pop(vm.L, 1);
-                            p8_log_to_file(err_msg);
-                            goto cart_error;
-                        }
-                    } else {
-                        lua_pop(vm.L, 1);
-                    }
-                }
-
-                /* Run _draw once */
-                lua_getglobal(vm.L, "_draw");
-                if (lua_isfunction(vm.L, -1)) {
-                    if (lua_pcall(vm.L, 0, 0, 0) != LUA_OK) {
-                        const char *m = lua_tostring(vm.L, -1);
-                        snprintf(err_msg, sizeof(err_msg),
-                                 "_draw: %s", m ? m : "(no msg)");
-                        lua_pop(vm.L, 1);
-                        p8_log_to_file(err_msg);
-                        goto cart_error;
-                    }
-                } else {
+            /* Single update + single draw per cycle. */
+            for (int phase = 0; phase < 2; phase++) {
+                const char *fn = (phase == 0) ? update_fn : "_draw";
+                lua_getglobal(vm.L, fn);
+                if (!lua_isfunction(vm.L, -1)) {
                     lua_pop(vm.L, 1);
+                    continue;
+                }
+                if ((frame % 30) == 0 && phase == 0) {
+                    char tag[32];
+                    snprintf(tag, sizeof(tag), "frame %lu",
+                             (unsigned long)frame);
+                    p8_log_ring(tag);
+                }
+                if (lua_pcall(vm.L, 0, 0, 0) != LUA_OK) {
+                    const char *m = lua_tostring(vm.L, -1);
+                    snprintf(err_msg, sizeof(err_msg),
+                             "%s: %s", fn, m ? m : "(no msg)");
+                    lua_pop(vm.L, 1);
+                    p8_log_to_file(err_msg);
+                    goto cart_error;
                 }
             }
 
