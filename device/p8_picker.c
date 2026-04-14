@@ -235,32 +235,86 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                 p8_font_draw(m, "no preview", 32, 56, 7);
             }
 
-            /* Title bar overlay */
-            p8_rectfill(m, 0, 0, 127, 7, 0);
-            char counter[16];
-            snprintf(counter, sizeof(counter), "%d/%d", sel + 1, n_entries);
-            p8_font_draw(m, counter, 2, 2, 7);
-
-            /* Bottom bar: cart name (strip .p8) */
-            p8_rectfill(m, 0, 119, 127, 127, 0);
-            char display[P8_PICKER_NAME_MAX];
-            strncpy(display, entries[sel].name, sizeof(display) - 1);
-            display[sizeof(display) - 1] = 0;
-            size_t dL = strlen(display);
-            if (dL >= 5 && strcasecmp(display + dL - 5, ".luac") == 0) {
-                display[dL - 5] = 0;
-                dL -= 5;
-            }
-            int text_px = (int)dL * P8_FONT_CELL_W;
-            int xp = (128 - text_px) / 2;
-            if (xp < 1) xp = 1;
-            p8_font_draw(m, display, xp, 121, 7);
-            if (n_entries > 1) {
-                p8_font_draw(m, "<", 0,   121, 6);
-                p8_font_draw(m, ">", 124, 121, 6);
-            }
-
+            /* Present thumbnail first, then overlay on the RGB565 scanline. */
             p8_machine_present(m, scanline);
+
+            /* Dim top and bottom bars for overlay */
+            for (int y = 0; y < 12; y++)
+                for (int x = 0; x < 128; x++) {
+                    int a = y * 128 + x;
+                    scanline[a] = ((scanline[a] >> 2) & 0x39E7);
+                }
+            for (int y = 115; y < 128; y++)
+                for (int x = 0; x < 128; x++) {
+                    int a = y * 128 + x;
+                    scanline[a] = ((scanline[a] >> 2) & 0x39E7);
+                }
+
+            /* Draw text directly into RGB565 scanline using font data */
+            extern const uint16_t font_lo[128];
+            extern const uint8_t  font_hi[128][5];
+            #define SCAN_TEXT(str, tx, ty, rgb565col) do { \
+                const char *_s = (str); int _x = (tx); \
+                for (; *_s; _s++) { \
+                    unsigned char _ch = (unsigned char)*_s; \
+                    if (_ch >= 128) { \
+                        const uint8_t *_g = font_hi[_ch - 128]; \
+                        for (int _r = 0; _r < 5; _r++) { \
+                            uint8_t _bits = _g[_r]; \
+                            for (int _c = 0; _c < 7; _c++) { \
+                                if ((_bits & (1 << _c)) && \
+                                    (unsigned)(_x+_c) < 128 && (unsigned)((ty)+_r) < 128) \
+                                    scanline[((ty)+_r)*128+_x+_c] = (rgb565col); \
+                            } \
+                        } \
+                        _x += 8; \
+                    } else { \
+                        uint16_t _g = font_lo[_ch]; \
+                        for (int _r = 0; _r < 5; _r++) { \
+                            int _bits = (_g >> (_r * 3)) & 0x7; \
+                            for (int _c = 0; _c < 3; _c++) { \
+                                if ((_bits & (1 << _c)) && \
+                                    (unsigned)(_x+_c) < 128 && (unsigned)((ty)+_r) < 128) \
+                                    scanline[((ty)+_r)*128+_x+_c] = (rgb565col); \
+                            } \
+                        } \
+                        _x += P8_FONT_CELL_W; \
+                    } \
+                } \
+            } while (0)
+
+            /* Page counter (centered in top bar) */
+            {
+                char counter[16];
+                snprintf(counter, sizeof(counter), "%d / %d", sel + 1, n_entries);
+                int cw = (int)strlen(counter) * P8_FONT_CELL_W;
+                SCAN_TEXT(counter, (128 - cw) / 2, 3, 0xFFFF);
+            }
+
+            /* Cart name (centered in bottom bar) */
+            {
+                char display[P8_PICKER_NAME_MAX];
+                strncpy(display, entries[sel].name, sizeof(display) - 1);
+                display[sizeof(display) - 1] = 0;
+                size_t dL = strlen(display);
+                if (dL >= 5 && strcasecmp(display + dL - 5, ".luac") == 0) {
+                    display[dL - 5] = 0;
+                    dL -= 5;
+                }
+                int text_px = (int)dL * P8_FONT_CELL_W;
+                int xp = (128 - text_px) / 2;
+                if (xp < 1) xp = 1;
+                SCAN_TEXT(display, xp, 119, 0xFFFF);
+            }
+
+            /* Nav arrows on the middle edges */
+            if (n_entries > 1) {
+                SCAN_TEXT("\x8b", 1, 60, 0xC618);    /* ⬅ left arrow, grey */
+                SCAN_TEXT("\x91", 119, 60, 0xC618);   /* ➡ right arrow, grey */
+            }
+
+            #undef SCAN_TEXT
+
             p8_lcd_wait_idle();
             p8_lcd_present(scanline);
             dirty = 0;
