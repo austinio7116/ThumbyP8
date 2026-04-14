@@ -16,7 +16,6 @@
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
-#include "pico/multicore.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
 #include "tusb.h"
@@ -52,58 +51,6 @@
  * Surfaced in the lobby so we can tell on the next boot whether
  * the previous session's writes survived. */
 static int g_boot_reformatted = 0;
-
-/* --- Core 1: dedicated audio rendering --------------------------------
- *
- * Audio synth + PWM ring filling runs on core 1, completely independent
- * of the game loop on core 0. This frees ~1-2ms per game frame AND
- * ensures the audio ring buffer stays full even when the game loop
- * stutters. The IRQ consumer (22050 Hz on core 0) is unaffected.
- *
- * Shared state between cores:
- *   - p8_audio synth state: written by core 0 (sfx/music calls),
- *     read by core 1 (render). No lock needed — sfx/music calls are
- *     instantaneous writes to channel state; render reads are coherent
- *     because ARM has strong memory ordering for aligned words.
- *   - master_volume: written by core 0 (menu), read by core 1.
- *   - audio_core1_active: flag to pause/resume core 1 rendering.
- */
-static volatile int audio_core1_active = 0;
-static volatile int audio_master_volume = 15;  /* shared with menu */
-#define CORE1_VOL_UNITY 15
-
-static void core1_audio_entry(void) {
-    int16_t buf[256];
-    while (1) {
-        if (!audio_core1_active) {
-            sleep_ms(5);
-            continue;
-        }
-        int room = p8_audio_pwm_room();
-        if (room < 64) {
-            /* Ring buffer has enough — sleep briefly */
-            sleep_us(500);
-            continue;
-        }
-        int n = room < 256 ? room : 256;
-        p8_audio_render(buf, n);
-        /* Apply master volume */
-        int vol = audio_master_volume;
-        if (vol != CORE1_VOL_UNITY) {
-            if (vol <= 0) {
-                for (int i = 0; i < n; i++) buf[i] = 0;
-            } else {
-                for (int i = 0; i < n; i++) {
-                    int32_t s = (int32_t)buf[i] * vol / CORE1_VOL_UNITY;
-                    if (s >  32767) s =  32767;
-                    if (s < -32768) s = -32768;
-                    buf[i] = (int16_t)s;
-                }
-            }
-        }
-        p8_audio_pwm_push(buf, n);
-    }
-}
 
 /* Current cart stem — set by the launcher before running the cart,
  * used by cartdata save/load to build the .sav path. */
@@ -710,13 +657,6 @@ int main(void) {
     p8_lcd_init();
     p8_audio_pwm_init();
 
-    /* Launch core 1 for dedicated audio rendering.
-     * Use a small custom stack in main SRAM (not SCRATCH_X which is
-     * limited). The audio loop only needs ~1KB for locals + buf[256]. */
-    static uint32_t core1_stack[512];  /* 2KB stack */
-    multicore_launch_core1_with_stack(core1_audio_entry,
-                                       core1_stack, sizeof(core1_stack));
-
     /* Clear screen immediately so the LCD doesn't show uninitialised RAM. */
     memset(scanline, 0, sizeof(scanline));
     p8_lcd_present(scanline);
@@ -1027,9 +967,6 @@ int main(void) {
         /* Record cart start time so time()/t() returns accurate seconds. */
         uint64_t cart_start_us = time_us_64();
 
-        /* Activate core 1 audio rendering */
-        audio_core1_active = 1;
-
         /* Run until the user exits via menu, or a Lua error fires. */
         #define VOL_MIN   0
         #define VOL_UNITY 15
@@ -1173,8 +1110,23 @@ int main(void) {
              * combined with deep Lua VM calls during _update/_draw
              * was causing hard-to-diagnose stack-overflow hardfaults
              * mid-game. */
-            /* Audio rendered on core 1 — just sync the volume. */
-            audio_master_volume = master_volume;
+            static int16_t audio_buf[1024];
+            int n = P8_AUDIO_SAMPLE_RATE / target_fps;
+            if (n > 1024) n = 1024;
+            p8_audio_render(audio_buf, n);
+            if (master_volume != VOL_UNITY) {
+                if (master_volume <= 0) {
+                    for (int i2 = 0; i2 < n; i2++) audio_buf[i2] = 0;
+                } else {
+                    for (int i2 = 0; i2 < n; i2++) {
+                        int32_t s2 = (int32_t)audio_buf[i2] * master_volume / VOL_UNITY;
+                        if (s2 >  32767) s2 =  32767;
+                        if (s2 < -32768) s2 = -32768;
+                        audio_buf[i2] = (int16_t)s2;
+                    }
+                }
+            }
+            p8_audio_pwm_push(audio_buf, n);
 
             /* FPS counter overlay — toggled via pause menu. */
             if (show_fps_toggle) {
@@ -1208,11 +1160,7 @@ int main(void) {
         }
         goto after_cart;
 
-        /* Stop core 1 audio when exiting cart */
-        audio_core1_active = 0;
-
 cart_error:
-        audio_core1_active = 0;
         /* Show the error on screen and wait for MENU to return. */
         {
             p8_machine_reset(&machine);
