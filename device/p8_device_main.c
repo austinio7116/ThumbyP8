@@ -1075,13 +1075,40 @@ int main(void) {
                     target_stem[sizeof(target_stem) - 1] = 0;
                     p8_api_set_stat6("");
                 }
-                /* Find cart entry matching target_stem (+ .luac). */
+                /* Find cart entry matching target_stem (+ .luac).
+                 * Also try fuzzy match stripping trailing "-N" BBS
+                 * revision suffixes (e.g. load("#foo") matches foo-6.luac). */
                 char want[P8_PICKER_NAME_MAX + 8];
                 snprintf(want, sizeof(want), "%s.luac", target_stem);
+                size_t target_len = strlen(target_stem);
                 for (int i = 0; i < n_carts; i++) {
                     if (strcasecmp(cart_entries[i].name, want) == 0) {
                         chosen = i;
                         break;
+                    }
+                }
+                /* Fuzzy match: strip "-N" suffix from cart filenames */
+                if (chosen < 0) {
+                    for (int i = 0; i < n_carts; i++) {
+                        const char *nm = cart_entries[i].name;
+                        size_t nm_len = strlen(nm);
+                        /* Must end in .luac */
+                        if (nm_len < 5) continue;
+                        if (strcasecmp(nm + nm_len - 5, ".luac") != 0) continue;
+                        size_t stem_len = nm_len - 5;
+                        /* Find last '-' in stem portion */
+                        const char *dash = NULL;
+                        for (size_t k = stem_len; k > 0; k--) {
+                            if (nm[k-1] == '-') { dash = nm + k - 1; break; }
+                            if (nm[k-1] < '0' || nm[k-1] > '9') break;
+                        }
+                        if (!dash || dash == nm) continue;
+                        size_t base_len = dash - nm;
+                        if (base_len != target_len) continue;
+                        if (strncasecmp(nm, target_stem, base_len) == 0) {
+                            chosen = i;
+                            break;
+                        }
                     }
                 }
                 if (chosen < 0) {
@@ -1292,6 +1319,50 @@ int main(void) {
         /* Override any Lua-defined functions with C native versions
          * (e.g. px9_decomp needs uint32_t precision). */
         p8_api_post_load(&vm);
+
+        /* Restore user memory saved by the previous cart's load() call.
+         * Validates magic + length + checksum; skips if anything is
+         * off (treats as no pending mem). */
+        {
+            FIL mf;
+            if (f_open(&mf, "/.pending_mem", FA_READ) == FR_OK) {
+                char magic[5] = {0};
+                uint32_t len = 0, xsum = 0;
+                UINT br;
+                int ok = 1;
+                f_read(&mf, magic, 5, &br);
+                if (br != 5 || magic[0] != 'P' || magic[1] != '8' ||
+                    magic[2] != 'M' || magic[3] != 'V' || magic[4] != 1) ok = 0;
+                if (ok) {
+                    f_read(&mf, &len, 4, &br);
+                    if (br != 4 || len != 0x10000 - 0x4300) ok = 0;
+                }
+                if (ok) {
+                    f_read(&mf, &xsum, 4, &br);
+                    if (br != 4) ok = 0;
+                }
+                if (ok) {
+                    f_read(&mf, &machine.mem[0x4300], len, &br);
+                    if (br != len) ok = 0;
+                }
+                f_close(&mf);
+                f_unlink("/.pending_mem");
+                if (ok) {
+                    uint32_t check = 0;
+                    for (uint32_t i = 0; i < len; i++) {
+                        check = (check * 31) ^ machine.mem[0x4300 + i];
+                    }
+                    if (check != xsum) {
+                        memset(&machine.mem[0x4300], 0, len);
+                        p8_log_to_file("load: pending_mem checksum fail");
+                    } else {
+                        p8_log_to_file("load: user mem restored");
+                    }
+                } else {
+                    p8_log_to_file("load: pending_mem invalid");
+                }
+            }
+        }
 
         /* Force a GC cycle to reclaim compile/load transients. */
         lua_gc(vm.L, LUA_GCCOLLECT, 0);
@@ -1528,6 +1599,32 @@ int main(void) {
                     }
                     /* Note: target was already added to /.hidden at
                      * conversion time by the load() scanner. */
+
+                    /* Save user memory (0x4300..0xffff = 48KB) so the
+                     * next cart can read data stashed there by this
+                     * cart's memcpy/cstore calls (POOM-style). Wrap
+                     * with magic header + length + 32-bit checksum
+                     * to detect partial writes on power loss. */
+                    {
+                        FIL mf;
+                        if (f_open(&mf, "/.pending_mem",
+                                   FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+                            UINT bw;
+                            const char magic[5] = {'P','8','M','V',1};
+                            f_write(&mf, magic, 5, &bw);
+                            uint32_t len = 0x10000 - 0x4300;
+                            f_write(&mf, &len, 4, &bw);
+                            /* Checksum: simple XOR-fold */
+                            uint32_t xsum = 0;
+                            for (uint32_t i = 0; i < len; i++) {
+                                xsum = (xsum * 31) ^ machine.mem[0x4300 + i];
+                            }
+                            f_write(&mf, &xsum, 4, &bw);
+                            f_write(&mf, &machine.mem[0x4300], len, &bw);
+                            f_close(&mf);
+                        }
+                    }
+
                     if (g_cartdata_active) {
                         p8_flash_disk_flush();
                     }

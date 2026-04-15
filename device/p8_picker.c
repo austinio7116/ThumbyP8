@@ -53,16 +53,37 @@ static void hidden_load(void) {
     hidden_buf[hidden_len] = 0;
 }
 
+/* Strip trailing "-N" BBS revision suffix from a stem in-place. */
+static void strip_bbs_suffix(char *stem) {
+    size_t L = strlen(stem);
+    if (L == 0) return;
+    size_t k = L;
+    while (k > 0 && stem[k-1] >= '0' && stem[k-1] <= '9') k--;
+    if (k > 0 && k < L && stem[k-1] == '-') stem[k-1] = 0;
+}
+
 static int is_hidden(const char *stem) {
-    size_t name_len = strlen(stem);
-    size_t i = 0;
-    while (i < hidden_len) {
-        size_t j = i;
-        while (j < hidden_len && hidden_buf[j] != '\n') j++;
-        size_t line_len = j - i;
-        if (line_len == name_len && memcmp(&hidden_buf[i], stem, name_len) == 0)
-            return 1;
-        i = j + 1;
+    /* Check both the full stem and its BBS-stripped variant. */
+    char stripped[P8_PICKER_NAME_MAX];
+    strncpy(stripped, stem, sizeof(stripped) - 1);
+    stripped[sizeof(stripped) - 1] = 0;
+    strip_bbs_suffix(stripped);
+
+    const char *keys[2] = { stem, stripped };
+    int key_count = (strcmp(stem, stripped) == 0) ? 1 : 2;
+
+    for (int ki = 0; ki < key_count; ki++) {
+        const char *k = keys[ki];
+        size_t name_len = strlen(k);
+        size_t i = 0;
+        while (i < hidden_len) {
+            size_t j = i;
+            while (j < hidden_len && hidden_buf[j] != '\n') j++;
+            size_t line_len = j - i;
+            if (line_len == name_len && memcmp(&hidden_buf[i], k, name_len) == 0)
+                return 1;
+            i = j + 1;
+        }
     }
     return 0;
 }

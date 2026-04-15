@@ -33,7 +33,7 @@ Last updated: 2026-04-14
 | grandmothership-4 | Broken | Hangs on loading |
 | highstakes-2 | Playable | Working |
 | hotwax-5 | Playable | Working |
-| kalikan_menu-6 | Partial | Level load issue |
+| kalikan_menu-6 | Playable | Multi-cart chain-load works with BBS suffix stripping |
 | marble_merger-5 | Playable | Working |
 | mini_pharma-1 | Playable | Working |
 | mossmoss-12 | Broken | OOM in _init |
@@ -41,10 +41,14 @@ Last updated: 2026-04-14
 | pck404_512px_under-1 | Playable | Working, P8SCII text fixed |
 | phoenix08-0 | Playable | Working |
 | pico_arcade-2 | Partial | Multi-cart launcher — requires load() to chain-load sub-carts (not yet implemented) |
-| pico_ball-5 | Partial | Audio - but not loading graphics |
+| pico_ball-5 | Playable | Chain-loads pico_ball_match via load() |
 | picohot-0 | Partial | Loads after P8SCII font + _ENV fixes; some in-game errors may remain |
 | picovalley-2 | Playable | Working - not played much |
-| poom_0-9 | Partial | Title renders correctly (secret palette fix); crashes on level load |
+| poom_0-9 | Partial | Menu works; level load fails — cart uses 32-bit bitmask flags in fixed-point that lose low bits in our single-precision lua_Number. Needs double or full C decompressor rewrite. |
+| poom_1 | Partial | Hidden sub-cart. Same precision issue as poom_0. |
+| kalikan_stage_1a | Playable | Hidden sub-cart, loaded via picker from kalikan menu |
+| kalikan_stage_1b | Playable | Hidden sub-cart |
+| pico_ball_match | Playable | Hidden sub-cart, chain-loaded from pico_ball |
 | porklike-2 | Playable | Working |
 | praxis_fighter_x-2 | Broken | OOM on  load |
 | province-4 | Playable | Plays fine |

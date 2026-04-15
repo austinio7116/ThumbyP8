@@ -1887,6 +1887,8 @@ static int p8_string_index(lua_State *L) {
     return 1;
 }
 
+static int l_p8_inext(lua_State *L);  /* forward decl; defined below */
+
 void p8_api_install(p8_vm *vm, p8_machine *machine, p8_input *input) {
     lua_State *L = vm->L;
 
@@ -1936,6 +1938,23 @@ void p8_api_install(p8_vm *vm, p8_machine *machine, p8_input *input) {
     lua_setglobal(L, "__orig_pairs");
     lua_pushcfunction(L, l_p8_pairs);
     lua_setglobal(L, "pairs");
+
+    /* PICO-8 exposes the stateless ipairs iterator as `inext`. */
+    lua_pushcfunction(L, l_p8_inext);
+    lua_setglobal(L, "inext");
+}
+
+/* PICO-8 built-in: inext(t, i) — stateless ipairs iterator.
+ * Returns (i+1, t[i+1]) if t[i+1] is non-nil, else nil. Used by
+ * `for k, v in inext, table do ... end` in kalikan and others. */
+static int l_p8_inext(lua_State *L) {
+    if (!lua_istable(L, 1)) return 0;
+    lua_Integer i = lua_tointeger(L, 2) + 1;
+    lua_rawgeti(L, 1, i);
+    if (lua_isnil(L, -1)) return 0;
+    lua_pushinteger(L, i);
+    lua_pushvalue(L, -2);
+    return 2;
 }
 
 int p8_api_get_menuitems(const char **labels, int max) {
