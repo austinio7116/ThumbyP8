@@ -1,6 +1,6 @@
 # ThumbyP8 Cart Compatibility
 
-Last updated: 2026-04-14
+Last updated: 2026-04-15
 
 ## Status Key
 - **Playable** — loads, controls work, plays to completion or reasonable extent
@@ -63,8 +63,8 @@ Last updated: 2026-04-14
 
 ## Summary
 
-- **Playable**: 28 carts
-- **Partial**: 5 carts
+- **Playable**: 33 carts (incl. 3 hidden sub-carts)
+- **Partial**: 4 carts
 - **Broken**: 10 carts
 - **Impossible**: 1 cart
 
@@ -72,11 +72,28 @@ Last updated: 2026-04-14
 
 - Carts using mouse input need d-pad simulation (not yet implemented)
 - Carts that OOM on a 280KB Lua heap can't run on device (280KB balances Lua heap vs libc headroom)
-- `load()` for multi-cart launchers not yet implemented
+- `load()` multi-cart games work via reboot — sub-carts need to be present on the device (see README "Multi-Cart Games")
+- Carts with 32-bit bitmask flags packed into single-precision fixed-point (POOM's custom decompressor) lose low bits. Would need double-precision lua_Number at cost of memory + performance
+- Keyboard input via `stat(28..32, key)` returns false (no keyboard hardware)
 - `extcmd`, `cstore`, `run`, `reset` etc. are no-ops (intentional for single-cart device)
 - Numerics use IEEE single-precision float, not PICO-8's 16.16 fixed-point — precision differs in low bits; some physics-heavy carts may drift. Bitwise-heavy algorithms (e.g. PX9 compression) are handled via C native implementations to avoid precision loss.
 
 ## Recent Fixes
+
+### 2026-04-15
+- **`load()` multi-cart support**: reboot-based chain-loading with user memory preservation (0x4300..0xffff saved to `/.pending_mem` with magic+checksum across reboot). Sub-carts auto-hide from picker. Fixes picoball campaign/versus matches, kalikan stages.
+- **BBS suffix stripping**: `load("#foo")` now matches `foo-6.luac` (cart revision suffixes).
+- **`inext` global**: PICO-8's stateless ipairs iterator. Required by kalikan's `for k,v in inext, t do` idiom.
+- **`all(string)`**: iterates over characters (used by carts that receive param data via stat(6)).
+- **`tonum(true)=1, tonum(false)=0`**: PICO-8 compat. Fixes kalikan d-pad input which uses `tonum(btn(1)) - tonum(btn(0))`.
+- **`stat(28..32, key)` returns false**: Lua integer 0 is truthy, so our old stub broke baba's title-screen key detection. Returns proper boolean false.
+- **sspr negative width/height**: PICO-8 spec — flips and shifts origin. Fixes picoball player sprite disappearing when facing left.
+- **Frame counter moved off 0x5f34**: PICO-8's GFX flags byte (carts poke bit 1 for inverted-circle peephole). We were corrupting it every frame causing flicker in picoball cutscene. Counter now lives in p8_machine struct field.
+- **Inverted circfill**: `poke(0x5f34, 2)` + `circfill(..., bor(0, 0x1800))` fills outside the circle — picoball peephole transition.
+- **Picker features**: favorites (B short-tap), delete (B hold 5s→warn, 10s→delete + reboot), sort (alphabetical/favorites/most-played), play count display, filter toggle.
+- **Quit to picker**: reboots to fully reclaim heap instead of leaking VM.
+- **GC tuning**: pause 200→110, mul 200→400 for tighter heap management.
+- **Debug info stripping** + **XIP lineinfo**: `.luac` files compiled without locvars/upvalue names (saves 5-20KB/cart); lineinfo stays in flash like bytecode (saves 8-32KB).
 
 ### 2026-04-14
 - **Heap fragmentation fix**: eliminated 32KB mallocs in picker thumbnail, menu backdrop, and loading screen that fragmented libc heap. Root cause of adelie and other borderline carts failing.
@@ -129,6 +146,11 @@ Last updated: 2026-04-14
 - **24981 (Mcraft)**: OOM.
 - **praxis_fighter_x-2, slipways-1**: OOM during translation — cart too large for translator's working memory.
 - **terra_1cart-43**: translation hangs — suspected LZW decoder pathology.
+- **poom_0-9 / poom_1**: menu works but level load fails. POOM's custom decompressor stores 32-bit actor-property bitmasks as fixed-point values where the low 16 bits encode flag bits. Our single-precision lua_Number (24-bit mantissa) can't preserve both integer and low fractional bits simultaneously. Would need `LUA_NUMBER=double` at significant memory + perf cost, or a full C reimplementation of POOM's `unpack_fixed`/`unpack_properties`/`decompress` chain plus a mechanism for Lua code to keep 32-bit precision through `band`/`bor`.
+- **fighter_street_ii-1**: OOM when starting a fight.
+- **grandmothership-4, fromrust_a-4, start_picocraft_1-3**: hang or fail to load (root cause unknown).
+- **fsgupicozombiegarden121-0**: needs mouse input (not supported).
+- **pico_arcade-2**: multi-cart launcher referencing 35+ BBS-ID sub-carts not locally available.
 
 ### Fuzz-only (NOT reproduced in normal play)
 
