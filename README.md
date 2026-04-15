@@ -35,6 +35,10 @@ To flash:
 
 ### 2. Add carts
 
+<p align="center">
+  <img src="screenshots/lobby.jpg" width="480" alt="ThumbyP8 lobby screen" />
+</p>
+
 On first boot (or if no carts are on the device), ThumbyP8 shows a lobby screen and appears as a USB drive labelled **P8THUMBv1**.
 
 1. Download `.p8.png` cart files from the [PICO-8 BBS](https://www.lexaloffle.com/bbs/?cat=7) or elsewhere
@@ -44,9 +48,17 @@ On first boot (or if no carts are on the device), ThumbyP8 shows a lobby screen 
 
 Each `.p8.png` is automatically converted to playable bytecode at boot (one cart per reboot cycle, a few seconds each). The lobby always shows on boot so USB is available for adding more carts.
 
+<p align="center">
+  <img src="screenshots/conversion.jpg" width="480" alt="On-device cart conversion" />
+</p>
+
 ### 3. Play
 
-Use **◀ ▶** in the picker to browse carts (shows the cart's label art). Press **A** to launch.
+<p align="center">
+  <img src="screenshots/picker.jpg" width="480" alt="Picker with favorite star and play count" />
+</p>
+
+Use **◀ ▶** in the picker to browse carts (shows the cart's label art). Press **A** to launch. The star icon marks favorites; the play count appears in the top-right.
 
 #### Picker controls
 
@@ -62,6 +74,10 @@ Use **◀ ▶** in the picker to browse carts (shows the cart's label art). Pres
 Releasing **B** before 10 seconds cancels the delete.
 
 #### Picker settings menu
+
+<p align="center">
+  <img src="screenshots/picker_menu.jpg" width="480" alt="Picker settings menu with sort options" />
+</p>
 
 Long-press MENU from the picker to open:
 
