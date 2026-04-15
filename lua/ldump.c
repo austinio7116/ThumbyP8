@@ -119,21 +119,17 @@ static void DumpUpvalues(const Proto* f, DumpState* D)
 
 static void DumpDebug(const Proto* f, DumpState* D)
 {
- int i,n;
- DumpString((D->strip) ? NULL : f->source,D);
- n= (D->strip) ? 0 : f->sizelineinfo;
- DumpVector(f->lineinfo,n,sizeof(int),D);
- n= (D->strip) ? 0 : f->sizelocvars;
+ int n;
+ /* ThumbyP8: always keep source + lineinfo (needed for error messages
+  * with line numbers). Always strip locvars and upvalue names — those
+  * are only used by the debugger and waste 5-20KB of heap. */
+ DumpString(f->source,D);
+ DumpVector(f->lineinfo,f->sizelineinfo,sizeof(int),D);
+ /* locvars: always empty */
+ n = 0;
  DumpInt(n,D);
- for (i=0; i<n; i++)
- {
-  DumpString(f->locvars[i].varname,D);
-  DumpInt(f->locvars[i].startpc,D);
-  DumpInt(f->locvars[i].endpc,D);
- }
- n= (D->strip) ? 0 : f->sizeupvalues;
+ /* upvalue names: always empty */
  DumpInt(n,D);
- for (i=0; i<n; i++) DumpString(f->upvalues[i].name,D);
 }
 
 static void DumpFunction(const Proto* f, DumpState* D)
