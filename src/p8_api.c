@@ -1104,7 +1104,12 @@ static int l_p8_tonum(lua_State *L) {
      * then push the original string unchanged. */
     if (lua_isnoneornil(L, 1)) { lua_pushnil(L); return 1; }
     if (lua_type(L, 1) == LUA_TNUMBER) { lua_pushvalue(L, 1); return 1; }
-    if (lua_isboolean(L, 1))    { lua_pushnil(L); return 1; }
+    if (lua_isboolean(L, 1))    {
+        /* PICO-8 compat: tonum(true)=1, tonum(false)=0. Cart idiom:
+         * `tonum(btn(1)) - tonum(btn(0))` for "-1/0/+1" direction. */
+        lua_pushinteger(L, lua_toboolean(L, 1) ? 1 : 0);
+        return 1;
+    }
     const char *s = lua_tostring(L, 1);
     if (!s) { lua_pushnil(L); return 1; }
     char *end;
@@ -1154,6 +1159,10 @@ static int l_p8_stat(lua_State *L) {
     } else if (n == 4 || n == 13) {
         /* Clipboard + cart filename — not supported, empty string. */
         lua_pushstring(L, "");
+    } else if (n >= 28 && n <= 32) {
+        /* Keyboard state (stat(28, key) etc). Returns true/false.
+         * We have no keyboard on device — always false, not 0. */
+        lua_pushboolean(L, 0);
     } else {
         lua_pushinteger(L, 0);
     }
