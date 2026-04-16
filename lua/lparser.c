@@ -1321,7 +1321,8 @@ static void fornum (LexState *ls, TString *varname, int line) {
   if (testnext(ls, ','))
     exp1(ls);  /* optional step */
   else {  /* default step = 1 */
-    luaK_codek(fs, fs->freereg, luaK_numberK(fs, 1));
+    /* Fixed-point: `1` is p8_fix_from_int(1) = 0x10000, not raw 1. */
+    luaK_codek(fs, fs->freereg, luaK_numberK(fs, p8_fix_from_int(1)));
     luaK_reserveregs(fs, 1);
   }
   forbody(ls, base, line, 1, 1);

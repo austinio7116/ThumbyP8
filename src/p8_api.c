@@ -55,13 +55,20 @@ static p8_input *get_input(lua_State *L) {
 /* PICO-8 is far more permissive than Lua about nil-as-number.
  * Real carts pass nil/missing where the API expects numbers and
  * PICO-8 just treats it as 0. Match that.  argi/argn return the
- * default (or 0) if the arg is nil, missing, or not coercible. */
+ * default (or 0) if the arg is nil, missing, or not coercible.
+ *
+ * lua_Number is int32_t fixed-point (16.16). `argi` extracts the
+ * integer part (floored). `argn0` returns the raw fixed-point bits
+ * — equal to the PICO-8 32-bit number representation, so it's the
+ * right input for bitwise ops. `argd`/`argf` decode to native
+ * double/float for libm math. `pushd`/`pushf`/`pushi` re-encode
+ * a native value back into fixed-point. */
 static int argi(lua_State *L, int idx, int dflt) {
     if (lua_isnoneornil(L, idx)) return dflt;
     int isnum = 0;
     lua_Number n = lua_tonumberx(L, idx, &isnum);
     if (!isnum) return dflt;
-    return (int)floor((double)n);
+    return (int)(n >> 16);
 }
 static lua_Number argn0(lua_State *L, int idx) {
     if (lua_isnoneornil(L, idx)) return 0;
@@ -69,7 +76,21 @@ static lua_Number argn0(lua_State *L, int idx) {
     lua_Number n = lua_tonumberx(L, idx, &isnum);
     return isnum ? n : 0;
 }
-/* (argn helper removed — unused after Phase 2 binding pass.) */
+static inline double argd(lua_State *L, int idx) {
+    return p8_fix_to_double(argn0(L, idx));
+}
+static inline float  argf(lua_State *L, int idx) {
+    return p8_fix_to_float(argn0(L, idx));
+}
+static inline void pushd(lua_State *L, double d) {
+    lua_pushnumber(L, p8_fix_from_double(d));
+}
+static inline void pushf(lua_State *L, float f) {
+    lua_pushnumber(L, p8_fix_from_float(f));
+}
+static inline void pushi(lua_State *L, int i) {
+    lua_pushnumber(L, p8_fix_from_int(i));
+}
 
 /* --- drawing primitives --------------------------------------------- */
 
@@ -255,7 +276,8 @@ static int l_palt(lua_State *L) {
     /* Single-arg form: palt(bitmask) where bit N = color N transparent.
      * Two-arg form: palt(color, transparent_bool). */
     if (lua_gettop(L) == 1 && lua_isnumber(L, 1)) {
-        unsigned int mask = (unsigned int)lua_tonumber(L, 1);
+        /* Integer value of the mask (not fixed-point bits). */
+        unsigned int mask = (unsigned int)argi(L, 1, 0);
         for (int i = 0; i < 16; i++) {
             if (mask & (1u << (15 - i))) {
                 m->mem[P8_DS_DRAW_PAL + i] |= 0x10;
@@ -281,8 +303,8 @@ static int l_spr(lua_State *L) {
     int y  = argi(L, 3, 0);
     /* w/h can be fractional (e.g. 0.5 = 4 pixels). Convert to pixel
      * dimensions here rather than in p8_spr, to preserve precision. */
-    lua_Number wf = lua_isnoneornil(L, 4) ? 1.0 : lua_tonumber(L, 4);
-    lua_Number hf = lua_isnoneornil(L, 5) ? 1.0 : lua_tonumber(L, 5);
+    double wf = lua_isnoneornil(L, 4) ? 1.0 : argd(L, 4);
+    double hf = lua_isnoneornil(L, 5) ? 1.0 : argd(L, 5);
     int pw = (int)(wf * 8);  /* pixel width */
     int ph = (int)(hf * 8);  /* pixel height */
     int fx = lua_toboolean(L, 6);
@@ -395,32 +417,46 @@ static int l_btnp(lua_State *L) {
 
 static int l_p8_sin(lua_State *L) {
     TRACE("sin");
-    lua_pushnumber(L, -sin(argn0(L, 1) * 2.0 * M_PI));
+    pushd(L, -sin(argd(L, 1) * 2.0 * M_PI));
     return 1;
 }
 static int l_p8_cos(lua_State *L) {
     TRACE("cos");
-    lua_pushnumber(L, cos(argn0(L, 1) * 2.0 * M_PI));
+    pushd(L, cos(argd(L, 1) * 2.0 * M_PI));
     return 1;
 }
 static int l_p8_atan2(lua_State *L) {
     TRACE("atan2");
-    lua_Number dx = argn0(L, 1);
-    lua_Number dy = argn0(L, 2);
-    if (dx == 0 && dy == 0) { lua_pushnumber(L, 0.25); return 1; }
+    double dx = argd(L, 1);
+    double dy = argd(L, 2);
+    if (dx == 0 && dy == 0) { pushd(L, 0.25); return 1; }
     /* PICO-8 anticlockwise screenspace: atan2(0,-1) -> 0.25 */
-    lua_Number a = 1.0 - atan2(dy, dx) / (2.0 * M_PI);
+    double a = 1.0 - atan2(dy, dx) / (2.0 * M_PI);
     a = a - floor(a);  /* wrap to [0,1) */
-    lua_pushnumber(L, a);
+    pushd(L, a);
     return 1;
 }
 static int l_p8_flr(lua_State *L) {
     TRACE("flr");
-    lua_pushnumber(L, floor(argn0(L, 1)));
+    /* floor via arithmetic right shift — exact in fixed-point. */
+    lua_Number n = argn0(L, 1);
+    lua_pushnumber(L, (n >> 16) << 16);
     return 1;
 }
-static int l_p8_ceil(lua_State *L) { TRACE("ceil"); lua_pushnumber(L, ceil(argn0(L, 1)));  return 1; }
-static int l_p8_abs(lua_State *L)  { TRACE("abs");  lua_pushnumber(L, fabs(argn0(L, 1)));  return 1; }
+static int l_p8_ceil(lua_State *L) {
+    TRACE("ceil");
+    lua_Number n = argn0(L, 1);
+    lua_Number neg = (lua_Number)(-(uint32_t)n);
+    lua_Number flr = (neg >> 16) << 16;
+    lua_pushnumber(L, (lua_Number)(-(uint32_t)flr));
+    return 1;
+}
+static int l_p8_abs(lua_State *L) {
+    TRACE("abs");
+    lua_Number n = argn0(L, 1);
+    lua_pushnumber(L, n < 0 ? (lua_Number)(-(uint32_t)n) : n);
+    return 1;
+}
 static int l_p8_min(lua_State *L) {
     TRACE("min");
     lua_Number a = argn0(L, 1);
@@ -449,9 +485,10 @@ static int l_p8_mid(lua_State *L) {
 }
 static int l_p8_rnd(lua_State *L) {
     TRACE("rnd");
-    /* No 1st arg → 0..1; numeric arg → 0..arg; table → random element */
+    /* No 1st arg → [0, 1); numeric arg → [0, arg); table → random element */
     if (lua_isnoneornil(L, 1)) {
-        lua_pushnumber(L, (lua_Number)rand() / (lua_Number)RAND_MAX);
+        /* 16-bit fractional bits from rand() = [0, 1) in fixed-point. */
+        lua_pushnumber(L, (lua_Number)(rand() & 0xffff));
         return 1;
     }
     if (lua_istable(L, 1)) {
@@ -462,14 +499,17 @@ static int l_p8_rnd(lua_State *L) {
         return 1;
     }
     lua_Number top = luaL_checknumber(L, 1);
-    lua_pushnumber(L, ((lua_Number)rand() / (lua_Number)RAND_MAX) * top);
+    /* r01 = rand()/RAND_MAX in fixed-point (0..0xffff), then fix-mul
+     * with top gives [0, top). */
+    lua_Number r01 = (lua_Number)(rand() & 0xffff);
+    lua_pushnumber(L, p8_fix_mul(r01, top));
     return 1;
 }
 static int l_p8_srand(lua_State *L) {
     TRACE("srand");
     /* PICO-8 srand() with no arg reseeds from the system frame
      * counter (effectively "time-based"). With an arg it sets a
-     * deterministic seed. */
+     * deterministic seed. Seed uses the raw 32-bit value. */
     if (lua_isnoneornil(L, 1)) {
         p8_machine *m = get_machine(L);
         uint32_t fc = m->frame_count;
@@ -484,14 +524,15 @@ static int l_p8_srand(lua_State *L) {
 static int l_p8_sgn(lua_State *L) {
     TRACE("sgn");
     lua_Number x = argn0(L, 1);
-    lua_pushnumber(L, x < 0 ? -1 : 1);
+    pushi(L, x < 0 ? -1 : 1);
     return 1;
 }
 
 static int l_p8_sqrt(lua_State *L) {
     TRACE("sqrt");
     lua_Number x = argn0(L, 1);
-    lua_pushnumber(L, x < 0 ? 0 : sqrt(x));
+    if (x < 0) { lua_pushnumber(L, 0); return 1; }
+    pushd(L, sqrt(p8_fix_to_double(x)));
     return 1;
 }
 /* PICO-8 integer division: floor(a/b). Used by translator for the
@@ -500,69 +541,61 @@ static int l_p8_idiv(lua_State *L) {
     TRACE("p8idiv");
     lua_Number a = argn0(L, 1);
     lua_Number b = argn0(L, 2);
-    if (b == 0) { lua_pushnumber(L, 0); return 1; } /* PICO-8: div by 0 = 0 */
-    lua_pushnumber(L, floor(a / b));
+    if (b == 0) { lua_pushnumber(L, 0); return 1; }
+    lua_Number q = p8_fix_div(a, b);
+    lua_pushnumber(L, (q >> 16) << 16);  /* floor */
     return 1;
 }
 
 /* PICO-8 pre-0.2 bitwise functions (now usually expressed as << >>
  * & | ~ in newer carts, but old carts still call these by name). */
-/* PICO-8 uses 16.16 fixed-point for all bitwise shift operations.
- * 0.5 in fixed-point is 0x00008000. Shifting works on the 32-bit
- * fixed-point representation, then the result is converted back.
- * This handles fractional values: 0.5 << 1 = 1.0, 0.5 >> 1 = 0.25. */
-static int32_t to_fix16(lua_Number v) { return (int32_t)(v * 65536.0f); }
-static void push_fix16(lua_State *L, int32_t v) {
-    lua_pushnumber(L, (lua_Number)v / 65536.0f);
-}
+/* PICO-8 bitwise ops work on the 32-bit fixed-point representation.
+ * Since lua_Number is now int32_t fixed-point, the "conversion" is
+ * just identity — the raw bits ARE the PICO-8 number. Shift count
+ * needs the integer VALUE (argi), not the fixed-point bits.
+ *
+ * Bit-exact with PICO-8: no float round-trip, so POOM-style 32-bit
+ * bitmask flags survive intact through band/bor/shl. */
 
 static int l_p8_shl(lua_State *L) {
     TRACE("shl");
-    int32_t x = to_fix16(argn0(L, 1));
-    int n = (int)argn0(L, 2);
-    push_fix16(L, (int32_t)(((uint32_t)x) << (n & 31)));
+    int32_t x = argn0(L, 1);
+    int n = argi(L, 2, 0) & 31;
+    lua_pushnumber(L, (int32_t)(((uint32_t)x) << n));
     return 1;
 }
 static int l_p8_shr(lua_State *L) {
     TRACE("shr");
-    int32_t x = to_fix16(argn0(L, 1));
-    int n = (int)argn0(L, 2);
-    /* Arithmetic right shift to match PICO-8's signed semantics. */
-    push_fix16(L, x >> (n & 31));
+    int32_t x = argn0(L, 1);
+    int n = argi(L, 2, 0) & 31;
+    lua_pushnumber(L, x >> n);  /* arithmetic (signed) */
     return 1;
 }
 static int l_p8_lshr(lua_State *L) {
     TRACE("lshr");
-    uint32_t x = (uint32_t)to_fix16(argn0(L, 1));
-    int n = (int)argn0(L, 2);
-    push_fix16(L, (int32_t)(x >> (n & 31)));
+    uint32_t x = (uint32_t)argn0(L, 1);
+    int n = argi(L, 2, 0) & 31;
+    lua_pushnumber(L, (int32_t)(x >> n));
     return 1;
 }
 static int l_p8_band(lua_State *L) {
     TRACE("band");
-    int32_t a = to_fix16(argn0(L, 1));
-    int32_t b = to_fix16(argn0(L, 2));
-    push_fix16(L, a & b);
+    lua_pushnumber(L, argn0(L, 1) & argn0(L, 2));
     return 1;
 }
 static int l_p8_bor(lua_State *L) {
     TRACE("bor");
-    int32_t a = to_fix16(argn0(L, 1));
-    int32_t b = to_fix16(argn0(L, 2));
-    push_fix16(L, a | b);
+    lua_pushnumber(L, argn0(L, 1) | argn0(L, 2));
     return 1;
 }
 static int l_p8_bxor(lua_State *L) {
     TRACE("bxor");
-    int32_t a = to_fix16(argn0(L, 1));
-    int32_t b = to_fix16(argn0(L, 2));
-    push_fix16(L, a ^ b);
+    lua_pushnumber(L, argn0(L, 1) ^ argn0(L, 2));
     return 1;
 }
 static int l_p8_bnot(lua_State *L) {
     TRACE("bnot");
-    int32_t a = to_fix16(argn0(L, 1));
-    push_fix16(L, ~a);
+    lua_pushnumber(L, ~argn0(L, 1));
     return 1;
 }
 
@@ -613,7 +646,7 @@ static int l_p8_split(lua_State *L) {
             char *end;
             double v = strtod(s + a, &end);
             if (b > a && end == s + b) {
-                lua_pushnumber(L, v);
+                pushd(L, v);
             } else {
                 lua_pushlstring(L, s + i, j - i);
             }
@@ -638,8 +671,8 @@ static int l_p8_ord(lua_State *L) {
     TRACE("ord");
     size_t slen = 0;
     const char *s = luaL_checklstring(L, 1, &slen);
-    int i = lua_isnoneornil(L, 2) ? 1 : (int)luaL_checknumber(L, 2);
-    int n = lua_isnoneornil(L, 3) ? 1 : (int)luaL_checknumber(L, 3);
+    int i = argi(L, 2, 1);
+    int n = argi(L, 3, 1);
     if (n < 1) n = 1;
     int count = 0;
     for (int k = 0; k < n; k++) {
@@ -662,7 +695,7 @@ static int l_p8_chr(lua_State *L) {
     luaL_Buffer b;
     luaL_buffinit(L, &b);
     for (int i = 1; i <= nargs; i++) {
-        int c = (int)luaL_checknumber(L, i) & 0xff;
+        int c = argi(L, i, 0) & 0xff;
         luaL_addchar(&b, (char)c);
     }
     luaL_pushresult(&b);
@@ -675,7 +708,7 @@ static int l_peek(lua_State *L) {
     TRACE("peek");
     p8_machine *m = get_machine(L);
     int addr = argi(L, 1, 0);
-    int n = lua_isnoneornil(L, 2) ? 1 : (int)lua_tonumber(L, 2);
+    int n = argi(L, 2, 1);
     if (n < 1) n = 1;
     for (int i = 0; i < n; i++) {
         int a = addr + i;
@@ -694,7 +727,7 @@ static int l_poke(lua_State *L) {
     int nargs = lua_gettop(L);
     for (int i = 2; i <= nargs; i++) {
         int a = addr + (i - 2);
-        int val = (int)lua_tonumber(L, i);
+        int val = argi(L, i, 0);
         if ((unsigned)a < P8_MEM_SIZE) m->mem[a] = (uint8_t)(val & 0xff);
     }
     return 0;
@@ -725,9 +758,9 @@ static int l_poke2(lua_State *L) {
     return 0;
 }
 
-/* peek4/poke4 — 32-bit PICO-8 16.16 fixed-point access. The 32-bit
- * value is stored as signed fixed-point: top 16 bits = integer part,
- * bottom 16 bits = fractional. Convert to/from float (lua_Number). */
+/* peek4/poke4 — 32-bit PICO-8 fixed-point access. The 32-bit value
+ * in memory IS the fixed-point bit pattern; since lua_Number is now
+ * int32_t fixed-point, push/pop is a direct reinterpret. */
 static int l_peek4(lua_State *L) {
     TRACE("peek4");
     p8_machine *m = get_machine(L);
@@ -739,19 +772,15 @@ static int l_peek4(lua_State *L) {
                | ((uint32_t)m->mem[addr + 1] << 8)
                | ((uint32_t)m->mem[addr + 2] << 16)
                | ((uint32_t)m->mem[addr + 3] << 24);
-    /* Interpret as signed 16.16 fixed-point */
-    int32_t signed_v = (int32_t)v;
-    lua_pushnumber(L, (lua_Number)signed_v / 65536.0);
+    lua_pushnumber(L, (int32_t)v);
     return 1;
 }
 static int l_poke4(lua_State *L) {
     TRACE("poke4");
     p8_machine *m = get_machine(L);
     int addr = argi(L, 1, 0);
-    double val = lua_isnoneornil(L, 2) ? 0.0 : (double)lua_tonumber(L, 2);
+    int32_t fixed = lua_isnoneornil(L, 2) ? 0 : (int32_t)lua_tonumber(L, 2);
     if (addr < 0 || addr + 3 >= P8_MEM_SIZE) return 0;
-    /* Convert float to 16.16 fixed-point */
-    int32_t fixed = (int32_t)(val * 65536.0);
     uint32_t u = (uint32_t)fixed;
     m->mem[addr]     = (uint8_t)(u & 0xff);
     m->mem[addr + 1] = (uint8_t)((u >> 8) & 0xff);
@@ -774,14 +803,12 @@ static int l_p8_fillp(lua_State *L) {
         p8_fillp(m, 0, 0);
         return 0;
     }
-    double pat = (double)lua_tonumber(L, 1);
-    int pattern = (int)floor(pat);
-    int transparent = 0;
-    /* Transparency flag: bit 15 of the 16-bit fractional part.
-     * In float terms, that's a 0.5 component in the fractional part. */
-    double frac = pat - floor(pat);
-    if (frac >= 0.5 - 1e-6) transparent = 1;
-    p8_fillp(m, pattern & 0xffff, transparent);
+    /* Fixed-point pattern: top 16 bits = pattern, bit 15 of low 16 =
+     * transparency flag. Exact with no float rounding. */
+    int32_t fp  = lua_tonumber(L, 1);
+    int pattern = (int)((fp >> 16) & 0xffff);
+    int transparent = (fp & 0x8000) ? 1 : 0;
+    p8_fillp(m, pattern, transparent);
     return 0;
 }
 
@@ -862,10 +889,10 @@ static int l_p8_tline(lua_State *L) {
     int y0 = argi(L, 2, 0);
     int x1 = argi(L, 3, 0);
     int y1 = argi(L, 4, 0);
-    double mx  = (double)argn0(L, 5);
-    double my  = (double)argn0(L, 6);
-    double mdx = lua_isnoneornil(L, 7) ? 0.125 : (double)lua_tonumber(L, 7);
-    double mdy = lua_isnoneornil(L, 8) ? 0.0   : (double)lua_tonumber(L, 8);
+    double mx  = argd(L, 5);
+    double my  = argd(L, 6);
+    double mdx = lua_isnoneornil(L, 7) ? 0.125 : p8_fix_to_double(lua_tonumber(L, 7));
+    double mdy = lua_isnoneornil(L, 8) ? 0.0   : p8_fix_to_double(lua_tonumber(L, 8));
     int layer  = argi(L, 9, 0);
     p8_tline(m, x0, y0, x1, y1, mx, my, mdx, mdy, layer);
     return 0;
@@ -941,16 +968,16 @@ static int l_p8_set_fps(lua_State *L)  { TRACE("set_fps");  (void)L; return 0; }
 /* Bitwise rotation helpers (PICO-8 pre-0.2 API). */
 static int l_p8_rotl(lua_State *L) {
     TRACE("rotl");
-    uint32_t x = (uint32_t)to_fix16(argn0(L, 1));
-    int n = (int)argn0(L, 2) & 31;
-    push_fix16(L, (int32_t)((x << n) | (x >> (32 - n))));
+    uint32_t x = (uint32_t)argn0(L, 1);
+    int n = argi(L, 2, 0) & 31;
+    lua_pushnumber(L, (int32_t)((x << n) | (x >> (32 - n))));
     return 1;
 }
 static int l_p8_rotr(lua_State *L) {
     TRACE("rotr");
-    uint32_t x = (uint32_t)to_fix16(argn0(L, 1));
-    int n = (int)argn0(L, 2) & 31;
-    push_fix16(L, (int32_t)((x >> n) | (x << (32 - n))));
+    uint32_t x = (uint32_t)argn0(L, 1);
+    int n = argi(L, 2, 0) & 31;
+    lua_pushnumber(L, (int32_t)((x >> n) | (x << (32 - n))));
     return 1;
 }
 
@@ -1054,7 +1081,7 @@ static int l_p8_time(lua_State *L) {
                 | ((uint32_t)m->mem[P8_DS_ELAPSED_MS + 1] << 8)
                 | ((uint32_t)m->mem[P8_DS_ELAPSED_MS + 2] << 16)
                 | ((uint32_t)m->mem[P8_DS_ELAPSED_MS + 3] << 24);
-    lua_pushnumber(L, (lua_Number)ms / 1000.0);
+    pushd(L, (double)ms / 1000.0);
     return 1;
 }
 
@@ -1115,7 +1142,7 @@ static int l_p8_tonum(lua_State *L) {
     char *end;
     double v = strtod(s, &end);
     if (end == s) { lua_pushnil(L); return 1; }
-    lua_pushnumber(L, (lua_Number)v);
+    pushd(L, v);
     return 1;
 }
 
@@ -1211,7 +1238,7 @@ static int l_p8_menuitem(lua_State *L) {
     }
     /* PICO-8 allows flag bits in the upper bytes (bit 8 = available
      * outside pause, etc). Mask to the low nibble for the index. */
-    int idx = ((int)lua_tonumber(L, 1) & 0x0f) - 1;  /* 1-based → 0-based */
+    int idx = (argi(L, 1, 0) & 0x0f) - 1;  /* 1-based → 0-based */
     if (idx < 0 || idx >= P8_MAX_MENUITEMS) return 0;
     if (lua_isnoneornil(L, 2)) {
         /* menuitem(index) — clear this slot */
@@ -1261,7 +1288,8 @@ static int l_p8_cartdata(lua_State *L) {
     return 1;
 }
 
-/* dget(idx) — read slot 0-63 as 16.16 fixed-point (float in Lua 5.2). */
+/* dget(idx) — read slot 0-63. Stored as 32-bit fixed-point bit
+ * pattern; since lua_Number IS that pattern now, reinterpret. */
 static int l_p8_dget(lua_State *L) {
     TRACE("dget");
     p8_machine *m = get_machine(L);
@@ -1272,8 +1300,7 @@ static int l_p8_dget(lua_State *L) {
                | ((uint32_t)m->mem[addr + 1] << 8)
                | ((uint32_t)m->mem[addr + 2] << 16)
                | ((uint32_t)m->mem[addr + 3] << 24);
-    int32_t sv = (int32_t)v;
-    lua_pushnumber(L, (lua_Number)sv / 65536.0);
+    lua_pushnumber(L, (int32_t)v);
     return 1;
 }
 
@@ -1283,8 +1310,7 @@ static int l_p8_dset(lua_State *L) {
     p8_machine *m = get_machine(L);
     int idx = argi(L, 1, 0);
     if (idx < 0 || idx >= 64) return 0;
-    double val = lua_isnoneornil(L, 2) ? 0.0 : (double)lua_tonumber(L, 2);
-    int32_t fixed = (int32_t)(val * 65536.0);
+    int32_t fixed = lua_isnoneornil(L, 2) ? 0 : (int32_t)lua_tonumber(L, 2);
     uint32_t u = (uint32_t)fixed;
     int addr = 0x5e00 + idx * 4;
     m->mem[addr]     = (uint8_t)(u & 0xff);
@@ -1451,7 +1477,7 @@ static int l_add(lua_State *L) {
     lua_Integer len = luaL_len(L, 1);
     if (!lua_isnoneornil(L, 3)) {
         /* add(tbl, val, index) — insert at index, shifting others up */
-        lua_Integer idx = (lua_Integer)lua_tonumber(L, 3);
+        lua_Integer idx = (lua_Integer)argi(L, 3, 0);
         if (idx < 1) idx = 1;
         if (idx > len + 1) idx = len + 1;
         for (lua_Integer i = len; i >= idx; i--) {

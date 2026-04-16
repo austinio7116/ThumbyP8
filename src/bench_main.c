@@ -222,7 +222,7 @@ int main(void) {
         printf("\n\n=== ThumbyP8 device bench  run #%d ===\n", ++run);
         printf("sys_clk = %u kHz   lua_Number = %s\n",
                (unsigned)clock_get_hz(clk_sys) / 1000,
-               (sizeof(lua_Number) == 4) ? "float (32-bit)" : "double (64-bit)");
+               "int32 fixed-point 16.16");
         run_all_benches(100);
         printf("=== run #%d complete — sleeping 5s ===\n", run);
         for (int i = 0; i < 50; i++) sleep_ms(100);

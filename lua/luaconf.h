@@ -10,6 +10,11 @@
 
 #include <limits.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
 
 
 /*
@@ -383,16 +388,66 @@
 ** ===================================================================
 */
 
-/* ThumbyP8: single-precision float — M33 has single-precision FPU only. */
-#define LUA_NUMBER	float
-#define LUA_NUMBER_FLOAT	1  /* enables proper unsigned conversion in llimits.h */
+/* ThumbyP8: 32-bit signed fixed-point 16.16 — matches PICO-8's numeric
+ * model exactly. Bit patterns are preserved through bitwise ops (so
+ * 32-bit bitmask tricks like POOM's work), arithmetic wraps on overflow
+ * like two's-complement integers, and float conversion only happens at
+ * the libm / native-API boundary. Range: [-32768, 32767.99998]; step
+ * 1/65536 ≈ 1.5e-5. */
+#include <stdint.h>
+#define LUA_NUMBER	int32_t
+#define LUA_NUMBER_FIXED	1
+
+/* Fixed-point constants */
+#define P8_FIX_ONE        0x00010000
+#define P8_FIX_SHIFT      16
+#define P8_FIX_FRAC_MASK  0x0000ffff
+
+/* Conversions between fixed-point and native C numeric types */
+#define p8_fix_from_int(n)    ((int32_t)((int32_t)(n) << P8_FIX_SHIFT))
+#define p8_fix_to_int(x)      ((int)((int32_t)(x) >> P8_FIX_SHIFT))
+#define p8_fix_from_float(f)  ((int32_t)((f) * 65536.0f))
+#define p8_fix_to_float(x)    ((float)(x) / 65536.0f)
+#define p8_fix_from_double(d) ((int32_t)((d) * 65536.0))
+#define p8_fix_to_double(x)   ((double)(x) / 65536.0)
+
+/* Fixed-point arithmetic. Defined inline so the compiler can fold
+ * constant expressions at compile time. */
+static inline int32_t p8_fix_mul(int32_t a, int32_t b) {
+    return (int32_t)(((int64_t)a * (int64_t)b) >> P8_FIX_SHIFT);
+}
+static inline int32_t p8_fix_div(int32_t a, int32_t b) {
+    if (b == 0) {
+        if (a == 0) return 0;
+        return (a < 0) ? (int32_t)0x80000000 : (int32_t)0x7fffffff;
+    }
+    return (int32_t)(((int64_t)a << P8_FIX_SHIFT) / b);
+}
+/* Floor toward negative infinity (PICO-8 flr semantics). */
+static inline int32_t p8_fix_floor(int32_t a) {
+    return (int32_t)((a >> P8_FIX_SHIFT) << P8_FIX_SHIFT);
+}
+/* Lua-style mod: a - floor(a/b)*b. Sign follows divisor. */
+static inline int32_t p8_fix_mod(int32_t a, int32_t b) {
+    if (b == 0) return 0;
+    int32_t q_fix   = p8_fix_div(a, b);
+    int32_t flr_fix = p8_fix_floor(q_fix);
+    return (int32_t)((uint32_t)a - (uint32_t)p8_fix_mul(flr_fix, b));
+}
+static inline int32_t p8_fix_pow(int32_t a, int32_t b) {
+    double da = (double)a / 65536.0;
+    double db = (double)b / 65536.0;
+    double r  = pow(da, db) * 65536.0;
+    if (r >= 2147483647.0) return (int32_t)0x7fffffff;
+    if (r <= -2147483648.0) return (int32_t)0x80000000;
+    return (int32_t)r;
+}
 
 /*
 @@ LUAI_UACNUMBER is the result of an 'usual argument conversion'
-@* over a number.
+** over a number — int32_t passes unchanged through varargs.
 */
-/* ThumbyP8: keep double for varargs promotion (C standard requires it). */
-#define LUAI_UACNUMBER	double
+#define LUAI_UACNUMBER	int32_t
 
 
 /*
@@ -401,25 +456,39 @@
 @@ lua_number2str converts a number to a string.
 @@ LUAI_MAXNUMBER2STR is maximum size of previous conversion.
 */
-/* ThumbyP8: float format — 7 significant digits for single-precision.
- * Custom lua_number2str because the Pico SDK's printf %g doesn't
- * strip trailing zeros (e.g. 47.0 → "47.00000" instead of "47"). */
-#define LUA_NUMBER_SCAN		"%f"
-#define LUA_NUMBER_FMT		"%.7g"
+/* SCAN/FMT are legacy; we always go through lua_number2str /
+ * lua_str2number helpers, which handle the fixed-point pairing. */
+#define LUA_NUMBER_SCAN		"%d"
+#define LUA_NUMBER_FMT		"%d"
 #define LUAI_MAXNUMBER2STR	32
-static inline int lua_number2str(char *s, float n) {
-    /* If the value is a whole number in int range, format as integer.
-     * PICO-8 prints 47 not 47.0. This matches PICO-8's tostr(). */
-    if (n == (float)(int)n && n >= -32768.0f && n <= 32767.0f) {
-        return sprintf(s, "%d", (int)n);
+
+/* Format a fixed-point number as a decimal string. Whole numbers
+ * print without a decimal ("47" not "47.0"). Fractional numbers get
+ * up to 4 decimal digits with trailing zeros trimmed. Matches PICO-8's
+ * tostr(). */
+static inline int lua_number2str(char *s, int32_t n) {
+    if ((n & P8_FIX_FRAC_MASK) == 0) {
+        return sprintf(s, "%d", (int)(n >> P8_FIX_SHIFT));
     }
-    /* For fractional values, use %f and manually trim trailing zeros.
-     * Pico SDK's printf %g doesn't strip trailing zeros correctly. */
-    int len = sprintf(s, "%.4f", (double)n);
-    /* Trim trailing zeros after decimal point */
-    if (memchr(s, '.', len)) {
-        while (len > 1 && s[len-1] == '0') len--;
-        if (len > 1 && s[len-1] == '.') len--;
+    int neg = (n < 0);
+    /* Use absolute value; handle INT32_MIN by unsigned arithmetic */
+    uint32_t un = neg ? (uint32_t)(-n) : (uint32_t)n;
+    uint32_t ip = un >> P8_FIX_SHIFT;
+    uint32_t fp = un & P8_FIX_FRAC_MASK;
+    /* Scale fractional part to 4 decimal digits: f * 10000 / 65536,
+     * rounded. Use 64-bit intermediate to avoid overflow. */
+    uint32_t frac = (uint32_t)(((uint64_t)fp * 10000u + 32768u) >> P8_FIX_SHIFT);
+    /* Carry if rounding pushed frac to 10000 */
+    if (frac >= 10000u) { frac = 0; ip++; }
+    int len;
+    if (frac == 0) {
+        len = sprintf(s, "%s%u", neg ? "-" : "", (unsigned)ip);
+    } else {
+        len = sprintf(s, "%s%u.%04u", neg ? "-" : "",
+                      (unsigned)ip, (unsigned)frac);
+        /* Trim trailing zeros on the fractional portion */
+        while (len > 0 && s[len-1] == '0') len--;
+        if (len > 0 && s[len-1] == '.') len--;
         s[len] = '\0';
     }
     return len;
@@ -427,50 +496,54 @@ static inline int lua_number2str(char *s, float n) {
 
 
 /*
-@@ l_mathop allows the addition of an 'l' or 'f' to all math operations
+@@ l_mathop is a no-op for fixed-point — only used by luai_nummod
+** and luai_numpow below, which we redefine directly. Kept as an
+** identity macro in case llimits.h references it.
 */
-/* ThumbyP8: use float math functions (sinf, cosf, floorf, etc.) */
-#define l_mathop(op)		op##f
+#define l_mathop(op)		op
 
 
 /*
-@@ lua_str2number converts a decimal numeric string to a number.
-@@ lua_strx2number converts an hexadecimal numeric string to a number.
-** In C99, 'strtod' does both conversions. C89, however, has no function
-** to convert floating hexadecimal strings to numbers. For these
-** systems, you can leave 'lua_strx2number' undefined and Lua will
-** provide its own implementation.
+@@ lua_str2number converts a decimal numeric string to a fixed-point
+** number. Uses strtod internally to handle hex float literals
+** ("0x1.8p0"), decimal fractions, and scientific notation uniformly,
+** then scales by 65536 with overflow saturation.
 */
-/* ThumbyP8: strtof for float parsing. */
-#define lua_str2number(s,p)	strtof((s), (p))
-
-#if defined(LUA_USE_STRTODHEX)
-#define lua_strx2number(s,p)	strtof((s), (p))
-#endif
+static inline int32_t p8_str2fix(const char *s, char **endp) {
+    double d = strtod(s, endp);
+    double scaled = d * 65536.0;
+    if (scaled >= 2147483647.0) return (int32_t)0x7fffffff;
+    if (scaled <= -2147483648.0) return (int32_t)0x80000000;
+    return (int32_t)scaled;
+}
+#define lua_str2number(s,p)	p8_str2fix((s), (p))
+/* C99 strtod already handles "0x1.8p0"-style hex floats, so route
+ * hex literals through the same helper to keep one parser. */
+#define lua_strx2number(s,p)	p8_str2fix((s), (p))
 
 
 /*
 @@ The luai_num* macros define the primitive operations over numbers.
+** Fixed-point: integer add/sub wrap on overflow; mul/div go through
+** int64; mod is Lua-style floor-mod; pow goes through double.
 */
 
-/* the following operations need the math library */
 #if defined(lobject_c) || defined(lvm_c)
 #include <math.h>
-#define luai_nummod(L,a,b)	((a) - l_mathop(floor)((a)/(b))*(b))
-#define luai_numpow(L,a,b)	(l_mathop(pow)(a,b))
+#define luai_nummod(L,a,b)	(p8_fix_mod((a), (b)))
+#define luai_numpow(L,a,b)	(p8_fix_pow((a), (b)))
 #endif
 
-/* these are quite standard operations */
 #if defined(LUA_CORE)
-#define luai_numadd(L,a,b)	((a)+(b))
-#define luai_numsub(L,a,b)	((a)-(b))
-#define luai_nummul(L,a,b)	((a)*(b))
-#define luai_numdiv(L,a,b)	((a)/(b))
-#define luai_numunm(L,a)	(-(a))
+#define luai_numadd(L,a,b)	((int32_t)((uint32_t)(a) + (uint32_t)(b)))
+#define luai_numsub(L,a,b)	((int32_t)((uint32_t)(a) - (uint32_t)(b)))
+#define luai_nummul(L,a,b)	(p8_fix_mul((a), (b)))
+#define luai_numdiv(L,a,b)	(p8_fix_div((a), (b)))
+#define luai_numunm(L,a)	((int32_t)(-(uint32_t)(a)))
 #define luai_numeq(a,b)		((a)==(b))
 #define luai_numlt(L,a,b)	((a)<(b))
 #define luai_numle(L,a,b)	((a)<=(b))
-#define luai_numisnan(L,a)	(!luai_numeq((a), (a)))
+#define luai_numisnan(L,a)	(0)  /* fixed-point has no NaN */
 #endif
 
 

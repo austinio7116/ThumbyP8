@@ -93,7 +93,16 @@ typedef LUAI_UACNUMBER l_uacNumber;
 #define cast(t, exp)	((t)(exp))
 
 #define cast_byte(i)	cast(lu_byte, (i))
+#if defined(LUA_NUMBER_FIXED)
+/* cast_num(int)  → fixed-point representation. All uses in the VM
+ * pass integer values (table lengths, constants), so int→fix is the
+ * correct interpretation. The one exception (readhexa in lobject.c
+ * passing cast_num(16.0)) is never reached because we override
+ * lua_strx2number in luaconf.h. */
+#define cast_num(i)	p8_fix_from_int(i)
+#else
 #define cast_num(i)	cast(lua_Number, (i))
+#endif
 #define cast_int(i)	cast(int, (i))
 #define cast_uchar(i)	cast(unsigned char, (i))
 
@@ -243,6 +252,18 @@ union luai_Cast { double l_d; LUA_INT32 l_p[2]; };
 
 #endif				/* } */
 
+
+/* ThumbyP8 fixed-point: extract the integer part (floored toward
+ * negative infinity via arithmetic right shift). Used for table
+ * indexing and tointeger()/tounsigned() conversions. */
+#if defined(LUA_NUMBER_FIXED)
+#define lua_number2int(i,n)       ((i) = (int)((n) >> P8_FIX_SHIFT))
+#define lua_number2integer(i,n)   ((i) = (lua_Integer)((n) >> P8_FIX_SHIFT))
+#define lua_number2unsigned(i,n)  ((i) = (lua_Unsigned)((n) >> P8_FIX_SHIFT))
+#define lua_unsigned2number(u)    (p8_fix_from_int((int)(u)))
+/* Hash a number: use its raw 32-bit pattern directly. */
+#define luai_hashnum(i,n)         ((i) = (int)(n))
+#endif
 
 /* the following definitions always work, but may be slow */
 

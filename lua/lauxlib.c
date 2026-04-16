@@ -948,8 +948,10 @@ LUALIB_API void luaL_checkversion_ (lua_State *L, lua_Number ver) {
   else if (*v != ver)
     luaL_error(L, "version mismatch: app. needs %f, Lua core provides %f",
                   ver, *v);
-  /* check conversions number -> integer types */
-  lua_pushnumber(L, -(lua_Number)0x1234);
+  /* check conversions number -> integer types. For fixed-point
+   * lua_Number we push via p8_fix_from_int so the Lua value carries
+   * the integer -0x1234, not the raw bit pattern. */
+  lua_pushnumber(L, p8_fix_from_int(-0x1234));
   if (lua_tointeger(L, -1) != -0x1234 ||
       lua_tounsigned(L, -1) != (lua_Unsigned)-0x1234)
     luaL_error(L, "bad conversion number->int;"
