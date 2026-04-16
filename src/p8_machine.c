@@ -108,6 +108,34 @@ void p8_machine_present(const p8_machine *m, uint16_t *dst) {
     }
 
     const uint8_t *src = &m->mem[P8_FB_BASE];
+
+    /* PICO-8 screen mode register at 0x5f2c selects display post-
+     * processing. Mode 3 renders the top-left 64×64 of the framebuffer
+     * doubled to fill the 128×128 display — carts that expect an old-
+     * school low-res look (picovalley) use it. Other exotic modes
+     * (mirror/flip/rotate) aren't supported yet; treated as mode 0. */
+    uint8_t screen_mode = m->mem[0x5f2c];
+    if (screen_mode == 3) {
+        /* Top-left 64×64 region, pixel-doubled to 128×128.
+         * Each 4bpp src byte covers 2 src pixels → 4 dst pixels on
+         * the current dst row + 4 pixels on the next dst row. */
+        for (int sy = 0; sy < 64; sy++) {
+            const uint8_t *row = src + sy * 64;  /* 128 px × 4bpp = 64B/row */
+            uint16_t *d0 = dst + (sy * 2) * 128;
+            uint16_t *d1 = d0 + 128;
+            for (int x = 0; x < 32; x++) {
+                uint8_t b = row[x];
+                uint16_t c0 = col16[b & 0x0f];
+                uint16_t c1 = col16[b >> 4];
+                d0[x*4 + 0] = c0;  d0[x*4 + 1] = c0;
+                d0[x*4 + 2] = c1;  d0[x*4 + 3] = c1;
+                d1[x*4 + 0] = c0;  d1[x*4 + 1] = c0;
+                d1[x*4 + 2] = c1;  d1[x*4 + 3] = c1;
+            }
+        }
+        return;
+    }
+
     for (int i = 0; i < P8_FB_BYTES; i++) {
         uint8_t b = src[i];
         dst[i * 2 + 0] = col16[b & 0x0f];
