@@ -688,6 +688,66 @@ static int convert_one_cart(const char *stem, p8_machine *m,
     return 0;
 }
 
+/* Luac cache format version. Bump whenever the Lua number model or
+ * bytecode format changes in a way that makes old .luac files
+ * incompatible. On mismatch we wipe all .luac + .claims files to
+ * force fresh conversion from the .p8.png sources.
+ *
+ * History:
+ *   1: original float lua_Number (unversioned, treated as no stamp)
+ *   2: int32 16.16 fixed-point lua_Number
+ */
+#define P8_LUAC_FMT_VERSION 2
+#define P8_LUAC_VER_PATH "/.luac_version"
+
+static void invalidate_luac_cache_if_stale(void) {
+    /* Read current stamp (if any). */
+    int stored = 0;
+    FIL vf;
+    if (f_open(&vf, P8_LUAC_VER_PATH, FA_READ) == FR_OK) {
+        char buf[16] = {0};
+        UINT br = 0;
+        f_read(&vf, buf, sizeof(buf) - 1, &br);
+        f_close(&vf);
+        stored = atoi(buf);
+    }
+    if (stored == P8_LUAC_FMT_VERSION) return;  /* cache still valid */
+
+    /* Stale — wipe every .luac and .claims under /carts/. Leave the
+     * .p8.png sources alone so they get re-converted on next scan. */
+    p8_log_to_file("luac cache stale — wiping");
+    DIR dir;
+    FILINFO info;
+    int wiped = 0;
+    if (f_opendir(&dir, "/carts") == FR_OK) {
+        while (f_readdir(&dir, &info) == FR_OK && info.fname[0]) {
+            if (info.fattrib & AM_DIR) continue;
+            size_t L = strlen(info.fname);
+            int is_luac   = (L >= 5 && strcasecmp(info.fname + L - 5, ".luac") == 0);
+            int is_claims = (L >= 7 && strcasecmp(info.fname + L - 7, ".claims") == 0);
+            if (!is_luac && !is_claims) continue;
+            char path[80];
+            snprintf(path, sizeof(path), "/carts/%s", info.fname);
+            f_unlink(path);
+            wiped++;
+        }
+        f_closedir(&dir);
+    }
+    char msg[64];
+    snprintf(msg, sizeof(msg), "wiped %d stale files", wiped);
+    p8_log_to_file(msg);
+
+    /* Write new version stamp. */
+    if (f_open(&vf, P8_LUAC_VER_PATH, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+        char buf[8];
+        int n = snprintf(buf, sizeof(buf), "%d\n", P8_LUAC_FMT_VERSION);
+        UINT bw;
+        f_write(&vf, buf, n, &bw);
+        f_close(&vf);
+    }
+    p8_flash_disk_flush();
+}
+
 /* Scan /carts/ for .p8.png files without matching .luac and convert. */
 static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
     DIR dir;
@@ -1001,6 +1061,9 @@ int main(void) {
          * and immediately toggle a favorite or start the delete timer. */
         while (p8_buttons_read() & (1 << P8_BTN_O)) sleep_ms(20);
     } else {
+        /* Invalidate stale .luac files from previous firmware versions
+         * (e.g. float → fixed-point lua_Number). Wipes and re-converts. */
+        invalidate_luac_cache_if_stale();
         int nc = convert_pending_carts(&machine, scanline);
         if (nc > 0) {
             char buf[40];
