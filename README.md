@@ -212,7 +212,7 @@ The translated source is compiled to Lua 5.2 bytecode and dumped directly to a `
 
 ### Layer 2: The Lua Runtime
 
-ThumbyP8 vendors **PUC Lua 5.2.4** (MIT) — the same Lua version PICO-8 is based on. This eliminates the integer/float distinction that caused widespread compatibility issues with Lua 5.3+. Configured with `LUA_NUMBER float` for single-precision (the RP2350's Cortex-M33 has a hardware single-precision FPU but no double FPU).
+ThumbyP8 vendors **PUC Lua 5.2.4** (MIT) — the same Lua version PICO-8 is based on. This eliminates the integer/float distinction that caused widespread compatibility issues with Lua 5.3+. Configured with `LUA_NUMBER = int32_t` interpreted as **16.16 fixed-point** — matching PICO-8's numeric model bit-for-bit so that `band`/`bor`/`shl` round-trips preserve the full 32-bit pattern (important for carts that pack bitmask flags or use `peek4`/`poke4` on raw binary data).
 
 ```
 src/p8.c               ← Lua VM lifecycle + capped allocator
@@ -248,7 +248,7 @@ lua/                   ← Vendored Lua 5.2.4
 
 **Performance:** Lua bytecode dispatch costs ~148 ns per instruction at 250 MHz. Carts do 10K–30K instructions per frame at 30 fps, so the interpreter uses ~1–4 ms of the 33 ms frame budget. Drawing and audio (pure C) dominate.
 
-**Fixed-point bitwise operations:** PICO-8 uses 16.16 fixed-point for all bitwise ops. The runtime functions (`shl`, `shr`, `band`, `bor`, etc.) convert to/from fixed-point internally, operating on the 32-bit integer representation then converting back to float.
+**Fixed-point bitwise operations:** Since `lua_Number` already *is* int32 fixed-point, bitwise ops (`shl`, `shr`, `band`, `bor`, `bxor`, `bnot`, `rotl`, `rotr`) work directly on the raw 32-bit pattern — no float round-trip, no precision loss. A literal like `0xbe74` is stored as the pattern `0xbe740000`, preserved through arithmetic, and extracted correctly when used as an address via `peek`/`poke`.
 
 **PICO-8 `_ENV` support:** Carts that use `local _ENV = t`, `for _ENV in all(t) do ... end`, or `function(_ENV) ... end` expect bare identifiers (like `pal`, `spr`, `btn`) to still resolve to globals even though `_ENV` has been redirected. PICO-8 does this implicitly. ThumbyP8 handles it via a source-level rewrite: every `_ENV` binding site is transformed so the bound table gets a `{__index = _G}` metatable, providing automatic global fallback.
 
@@ -367,7 +367,7 @@ All test carts compile successfully through the on-device pipeline. Runtime comp
 ### Known Limitations
 
 - **Lua heap cap is 280 KB.** Very large carts may OOM during `_init` or level transitions. Balances Lua heap against libc headroom.
-- **Numerics use IEEE single-precision float**, not PICO-8's 16.16 fixed-point. Most carts don't notice; a few physics-heavy carts may drift in the low bits. Bitwise-heavy algorithms (e.g. PX9 compression) are handled via C native implementations where needed — see `px9_decomp` in `p8_api.c`.
+- **Numerics are PICO-8-exact: int32 16.16 fixed-point.** All arithmetic wraps on overflow, bitwise ops preserve the 32-bit pattern, hex literals like `0xbe74` keep the correct bit pattern for use as addresses. No precision divergence from real PICO-8. (Earlier releases used single-precision float, which lost bits in 32-bit bitmask tricks — those are now handled natively.)
 - **Multi-cart games need all sub-carts present** — `load()` chain-loads by rebooting into the target cart (see [Multi-Cart Games](#multi-cart-games) below). You must have the sub-cart `.p8.png` files on the device.
 - **No mouse input** — carts requiring `stat(32..39)` for mouse won't work. D-pad simulation is possible but not yet implemented.
 - **`extcmd`, `cstore`, `run`, `reset`** are no-ops (intentional for a single-cart-per-session device).
