@@ -81,17 +81,13 @@ void p8_flash_disk_init(void) {
     cache_clock = 0;
     last_write_time = get_absolute_time();
 
-#ifdef THUMBYONE_SLOT_MODE
-    /* Extend ATRANS slot 1 so the shared FAT region (physical
-     * 0x660000, in slot 1's 0x10400000..0x10800000 window) is
-     * readable. Bootrom left it at SIZE=0 which causes a bus
-     * fault on any access. We map logical 0x10400000..0x10800000
-     * to physical 0x400000..0x800000 (identity for that slice). */
-    const uint32_t window = 0x400;   /* 4 MB = 0x400 sectors */
-    const uint32_t base   = 0x400;   /* physical 0x400000 / 4K */
-    qmi_hw->atrans[1] = (window << 16) | base;
-    __asm__ volatile("dsb" ::: "memory");
-#endif
+    /* ATRANS slots 1..3 identity setup now lives in ThumbyOne's
+     * common/thumbyone_handoff.c as a priority-101 constructor.
+     * That covers the full shared-FAT region rather than only
+     * the first 4 MB, so large cart collections no longer
+     * bus-fault on reads past physical 0x800000. qmi.h include
+     * stays because commit_entry still uses atrans for
+     * save/restore around flash writes. */
 }
 
 uint32_t p8_flash_disk_sector_count(void) { return FLASH_DISK_SECTORS; }
