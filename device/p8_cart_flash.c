@@ -9,11 +9,11 @@
 #include "hardware/sync.h"
 
 #ifdef THUMBYONE_SLOT_MODE
-/* See p8_flash_disk.c for the rationale. Briefly: SDK's
- * flash_range_erase / flash_range_program reset QMI ATRANS to
- * identity on return, which kills the ATRANS mapping the bootrom
- * set up for our chained image. Save/restore around each call. */
+/* See p8_flash_disk.c / nes_flash_disk.c for the rationale.
+ * SDK flash ops reset QMI ATRANS + M0_TIMING/RCMD/RFMT; we
+ * save/restore both around each call. */
 #include "hardware/structs/qmi.h"
+#include "thumbyone_handoff.h"
 static inline void thumbyone_save_atrans(uint32_t out[4]) {
     out[0] = qmi_hw->atrans[0]; out[1] = qmi_hw->atrans[1];
     out[2] = qmi_hw->atrans[2]; out[3] = qmi_hw->atrans[3];
@@ -21,7 +21,7 @@ static inline void thumbyone_save_atrans(uint32_t out[4]) {
 static inline void thumbyone_restore_atrans(const uint32_t in[4]) {
     qmi_hw->atrans[0] = in[0]; qmi_hw->atrans[1] = in[1];
     qmi_hw->atrans[2] = in[2]; qmi_hw->atrans[3] = in[3];
-    __asm__ volatile("dsb" ::: "memory");
+    thumbyone_xip_fast_setup();
 }
 #endif
 

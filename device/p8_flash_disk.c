@@ -27,18 +27,11 @@
 #include "hardware/sync.h"
 
 #ifdef THUMBYONE_SLOT_MODE
-/* When embedded in ThumbyOne's P8 partition, flash writes and
- * cross-partition reads need QMI ATRANS help — see the matching
- * comments in nes_flash_disk.c for the full story. Summary:
- *   (1) rom_chain_image sets up ATRANS slot 0 only. Reads in
- *       slots 1..3 windows bus-fault. The shared FAT lives at
- *       physical 0x660000 (inside slot 1's 4 MB window), so we
- *       extend ATRANS slot 1 in p8_flash_disk_init before any
- *       FatFs operation tries to read.
- *   (2) The SDK's flash_range_erase / flash_range_program reset
- *       ATRANS back to identity on return. Save/restore around
- *       each call. */
+/* See nes_flash_disk.c for the full rationale. Save/restore both
+ * ATRANS (image code mapping) and M0_{TIMING,RCMD,RFMT} (fast-QPI
+ * XIP config) around SDK flash ops — SDK resets both. */
 #include "hardware/structs/qmi.h"
+#include "thumbyone_handoff.h"
 #endif
 
 #define XIP_BASE_ADDR 0x10000000u
@@ -149,7 +142,8 @@ static inline void thumbyone_restore_atrans(const uint32_t in[4]) {
     qmi_hw->atrans[1] = in[1];
     qmi_hw->atrans[2] = in[2];
     qmi_hw->atrans[3] = in[3];
-    __asm__ volatile("dsb" ::: "memory");
+    /* Restore fast QPI XIP config too — flash_range_* reset it. */
+    thumbyone_xip_fast_setup();
 }
 #endif
 
