@@ -193,10 +193,10 @@ if (THUMBYONE_SLOT_MODE)
         FLASH_DISK_SIZE=0x9A0000u     # 9.6 MB
         P8_ACTIVE_CART_FLASH_OFFSET=0x620000u
     )
-    # Link the ThumbyOne common lib to get the handoff API + slot
-    # IDs (used by p8_relaunch_self to write the P8 slot magic
-    # instead of plain watchdog_reboot).
-    target_link_libraries(p8run_device PRIVATE thumbyone_common)
+    # Compile ThumbyOne's handoff source into this target directly
+    # (common is not a CMake library — see common/CMakeLists.txt).
+    target_sources(p8run_device PRIVATE ${THUMBYONE_COMMON_SRC})
+    target_include_directories(p8run_device PRIVATE ${THUMBYONE_COMMON_INCLUDE})
     pico_set_uf2_family(p8run_device "absolute")
     pico_add_extra_outputs(p8run_device)
 else()
