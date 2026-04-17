@@ -8,6 +8,23 @@
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 
+#ifdef THUMBYONE_SLOT_MODE
+/* See p8_flash_disk.c for the rationale. Briefly: SDK's
+ * flash_range_erase / flash_range_program reset QMI ATRANS to
+ * identity on return, which kills the ATRANS mapping the bootrom
+ * set up for our chained image. Save/restore around each call. */
+#include "hardware/structs/qmi.h"
+static inline void thumbyone_save_atrans(uint32_t out[4]) {
+    out[0] = qmi_hw->atrans[0]; out[1] = qmi_hw->atrans[1];
+    out[2] = qmi_hw->atrans[2]; out[3] = qmi_hw->atrans[3];
+}
+static inline void thumbyone_restore_atrans(const uint32_t in[4]) {
+    qmi_hw->atrans[0] = in[0]; qmi_hw->atrans[1] = in[1];
+    qmi_hw->atrans[2] = in[2]; qmi_hw->atrans[3] = in[3];
+    __asm__ volatile("dsb" ::: "memory");
+}
+#endif
+
 #define REGION_OFFSET  P8_ACTIVE_CART_FLASH_OFFSET
 #define REGION_SIZE    P8_ACTIVE_CART_FLASH_SIZE
 #define XIP_ADDR(off)  ((const void *)(0x10000000u + (off)))
@@ -20,7 +37,14 @@ void p8_cart_flash_erase_all(void) {
      * playing; the lobby/picker isn't drawing). */
     for (size_t off = 0; off < REGION_SIZE; off += FLASH_SECTOR_SIZE) {
         uint32_t ints = save_and_disable_interrupts();
+#ifdef THUMBYONE_SLOT_MODE
+        uint32_t saved_atrans[4];
+        thumbyone_save_atrans(saved_atrans);
+#endif
         flash_range_erase(REGION_OFFSET + off, FLASH_SECTOR_SIZE);
+#ifdef THUMBYONE_SLOT_MODE
+        thumbyone_restore_atrans(saved_atrans);
+#endif
         restore_interrupts(ints);
     }
 }
@@ -42,7 +66,14 @@ const void *p8_cart_flash_program(const void *data, size_t len,
          * FLASH_PAGE_SIZE or the final partial page. The SDK handles
          * partial pages on most RP2 variants; pad with 0xFF if not. */
         uint32_t ints = save_and_disable_interrupts();
+#ifdef THUMBYONE_SLOT_MODE
+        uint32_t saved_atrans[4];
+        thumbyone_save_atrans(saved_atrans);
+#endif
         flash_range_program(flash_off + done, src + done, chunk);
+#ifdef THUMBYONE_SLOT_MODE
+        thumbyone_restore_atrans(saved_atrans);
+#endif
         restore_interrupts(ints);
         done += chunk;
     }

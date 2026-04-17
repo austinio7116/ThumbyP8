@@ -23,8 +23,17 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Flash-disk region. Defaults target the standalone-firmware
+ * flash map (1 MB firmware + 12 MB FAT). Parent projects that
+ * embed ThumbyP8 in a partition-table layout (ThumbyOne) override
+ * these via -D at build time to point at the shared FAT region
+ * rather than the slot's own code space. */
+#ifndef FLASH_DISK_OFFSET
 #define FLASH_DISK_OFFSET   (1u * 1024u * 1024u)    /* 1 MB into flash  */
+#endif
+#ifndef FLASH_DISK_SIZE
 #define FLASH_DISK_SIZE     (12u * 1024u * 1024u)   /* 12 MB usable     */
+#endif
 #define FLASH_DISK_SECTOR_SIZE 512
 #define FLASH_DISK_SECTORS  (FLASH_DISK_SIZE / FLASH_DISK_SECTOR_SIZE)
 #define FLASH_DISK_ERASE    4096

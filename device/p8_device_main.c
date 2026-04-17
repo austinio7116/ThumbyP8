@@ -46,6 +46,26 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
+#ifdef THUMBYONE_SLOT_MODE
+#include "thumbyone_handoff.h"
+#endif
+
+/* Relaunch this firmware. In standalone mode, a plain
+ * watchdog_reboot(0,0,0) cold-boots the chip back into P8. In
+ * ThumbyOne mode that reboot lands in the lobby instead — not
+ * what the PICO-8 sub-cart load() or post-cart exit paths want.
+ * Set the P8 slot handoff magic so the lobby re-chains into us on
+ * the following boot. */
+static void p8_relaunch_self(void) {
+#ifdef THUMBYONE_SLOT_MODE
+    thumbyone_handoff_request_slot(THUMBYONE_SLOT_P8);
+    /* does not return */
+#else
+    watchdog_reboot(0, 0, 0);
+#endif
+    while (1) tight_loop_contents();
+}
+
 /* Set by boot_filesystem(): 1 if we ran f_mkfs at boot (label
  * mismatch / no FS / MENU forced), 0 if the existing FS was kept.
  * Surfaced in the lobby so we can tell on the next boot whether
@@ -812,7 +832,7 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
     p8_flash_disk_flush();
     sleep_ms(1000);  /* brief pause so user sees the final status */
 
-    watchdog_reboot(0, 0, 0);
+    p8_relaunch_self();
     while (1) tight_loop_contents();
 
     return 1; /* unreachable */
@@ -1607,7 +1627,7 @@ int main(void) {
                          * reclaim heap (lua_close can panic on OOM). */
                         settings_save();
                         p8_flash_disk_flush();
-                        watchdog_reboot(0, 0, 0);
+                        p8_relaunch_self();
                         while (1) tight_loop_contents();
                     }
                     /* Handle cart-registered custom menu items */
@@ -1760,7 +1780,7 @@ int main(void) {
                     }
                     settings_save();
                     p8_flash_disk_flush();
-                    watchdog_reboot(0, 0, 0);
+                    p8_relaunch_self();
                     while (1) tight_loop_contents();
                 }
             }

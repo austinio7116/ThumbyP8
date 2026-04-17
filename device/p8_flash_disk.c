@@ -26,6 +26,21 @@
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 
+#ifdef THUMBYONE_SLOT_MODE
+/* When embedded in ThumbyOne's P8 partition, flash writes and
+ * cross-partition reads need QMI ATRANS help — see the matching
+ * comments in nes_flash_disk.c for the full story. Summary:
+ *   (1) rom_chain_image sets up ATRANS slot 0 only. Reads in
+ *       slots 1..3 windows bus-fault. The shared FAT lives at
+ *       physical 0x660000 (inside slot 1's 4 MB window), so we
+ *       extend ATRANS slot 1 in p8_flash_disk_init before any
+ *       FatFs operation tries to read.
+ *   (2) The SDK's flash_range_erase / flash_range_program reset
+ *       ATRANS back to identity on return. Save/restore around
+ *       each call. */
+#include "hardware/structs/qmi.h"
+#endif
+
 #define XIP_BASE_ADDR 0x10000000u
 
 /* Cache: 8 erase-blocks (32 KB). With continuous draining (one
@@ -65,6 +80,18 @@ void p8_flash_disk_init(void) {
     }
     cache_clock = 0;
     last_write_time = get_absolute_time();
+
+#ifdef THUMBYONE_SLOT_MODE
+    /* Extend ATRANS slot 1 so the shared FAT region (physical
+     * 0x660000, in slot 1's 0x10400000..0x10800000 window) is
+     * readable. Bootrom left it at SIZE=0 which causes a bus
+     * fault on any access. We map logical 0x10400000..0x10800000
+     * to physical 0x400000..0x800000 (identity for that slice). */
+    const uint32_t window = 0x400;   /* 4 MB = 0x400 sectors */
+    const uint32_t base   = 0x400;   /* physical 0x400000 / 4K */
+    qmi_hw->atrans[1] = (window << 16) | base;
+    __asm__ volatile("dsb" ::: "memory");
+#endif
 }
 
 uint32_t p8_flash_disk_sector_count(void) { return FLASH_DISK_SECTORS; }
@@ -114,6 +141,22 @@ static int __not_in_flash_func(pick_evict)(void) {
  * the device would disconnect mid-flush. */
 #define PROG_CHUNK 256
 
+#ifdef THUMBYONE_SLOT_MODE
+static inline void thumbyone_save_atrans(uint32_t out[4]) {
+    out[0] = qmi_hw->atrans[0];
+    out[1] = qmi_hw->atrans[1];
+    out[2] = qmi_hw->atrans[2];
+    out[3] = qmi_hw->atrans[3];
+}
+static inline void thumbyone_restore_atrans(const uint32_t in[4]) {
+    qmi_hw->atrans[0] = in[0];
+    qmi_hw->atrans[1] = in[1];
+    qmi_hw->atrans[2] = in[2];
+    qmi_hw->atrans[3] = in[3];
+    __asm__ volatile("dsb" ::: "memory");
+}
+#endif
+
 static void __not_in_flash_func(commit_entry)(int idx) {
     if (idx < 0 || cache[idx].block < 0 || !cache[idx].dirty) return;
     uint32_t flash_off = FLASH_DISK_OFFSET +
@@ -122,14 +165,28 @@ static void __not_in_flash_func(commit_entry)(int idx) {
     /* Erase — atomic */
     {
         uint32_t ints = save_and_disable_interrupts();
+#ifdef THUMBYONE_SLOT_MODE
+        uint32_t saved_atrans[4];
+        thumbyone_save_atrans(saved_atrans);
+#endif
         flash_range_erase(flash_off, FLASH_DISK_ERASE);
+#ifdef THUMBYONE_SLOT_MODE
+        thumbyone_restore_atrans(saved_atrans);
+#endif
         restore_interrupts(ints);
     }
 
     /* Program — chunked, IRQs re-enabled between chunks */
     for (uint32_t off = 0; off < FLASH_DISK_ERASE; off += PROG_CHUNK) {
         uint32_t ints = save_and_disable_interrupts();
+#ifdef THUMBYONE_SLOT_MODE
+        uint32_t saved_atrans[4];
+        thumbyone_save_atrans(saved_atrans);
+#endif
         flash_range_program(flash_off + off, cache[idx].data + off, PROG_CHUNK);
+#ifdef THUMBYONE_SLOT_MODE
+        thumbyone_restore_atrans(saved_atrans);
+#endif
         restore_interrupts(ints);
         /* IRQs are now on — USB controller can service any pending
          * packets / endpoint transfers before we start the next page. */

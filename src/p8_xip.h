@@ -37,7 +37,16 @@
  * 1–13 MB). It's erased and reprogrammed each time a new cart
  * is launched.
  */
+/* Defaults target the standalone flash layout (scratch at 13 MB,
+ * just past the 12 MB FatFs region). Parent projects (ThumbyOne)
+ * override these via -D at build time to point at whatever scratch
+ * slot their flash layout reserves — see common/slot_layout.h in
+ * ThumbyOne for the canonical shared offset. */
+#ifndef P8_ACTIVE_CART_FLASH_OFFSET
 #define P8_ACTIVE_CART_FLASH_OFFSET  (13u * 1024u * 1024u)
+#endif
+#ifndef P8_ACTIVE_CART_FLASH_SIZE
 #define P8_ACTIVE_CART_FLASH_SIZE    (256u * 1024u)
+#endif
 
 #endif /* THUMBYP8_XIP_H */

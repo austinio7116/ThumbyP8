@@ -19,15 +19,24 @@
 #
 cmake_minimum_required(VERSION 3.16)
 
-# Pull the SDK in BEFORE project() — it sets the toolchain.
-set(PICO_BOARD tinycircuits_thumby_color_rp2350)
-set(PICO_PLATFORM rp2350)
-include(${PICO_SDK_PATH}/pico_sdk_init.cmake)
+# Standalone vs. embedded-in-ThumbyOne build.
+#
+# When the parent project sets THUMBYONE_SLOT_MODE (via
+# add_subdirectory from ThumbyOne/CMakeLists.txt), skip the
+# top-level SDK + project() scaffolding because the parent has
+# already done it. Also suppress the standalone UF2 output;
+# ThumbyOne consumes the ELF directly and rebases its blocks
+# into the P8 partition via its UF2 combiner.
+if (NOT THUMBYONE_SLOT_MODE)
+    set(PICO_BOARD tinycircuits_thumby_color_rp2350)
+    set(PICO_PLATFORM rp2350)
+    include(${PICO_SDK_PATH}/pico_sdk_init.cmake)
 
-project(thumbyp8_device C CXX ASM)
-set(CMAKE_C_STANDARD 11)
+    project(thumbyp8_device C CXX ASM)
+    set(CMAKE_C_STANDARD 11)
 
-pico_sdk_init()
+    pico_sdk_init()
+endif()
 
 set(P8_ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
 
@@ -168,4 +177,28 @@ target_link_libraries(p8run_device PRIVATE
 # through TinyUSB but stdio doesn't auto-route to it yet.
 pico_enable_stdio_usb(p8run_device 0)
 pico_enable_stdio_uart(p8run_device 0)
-pico_add_extra_outputs(p8run_device)
+
+if (THUMBYONE_SLOT_MODE)
+    # Embedded in ThumbyOne's P8 partition (512 KB at flash offset
+    # 0x120000). See ThumbyOne/common/slot_layout.h for the
+    # canonical values; keep these in sync.
+    #   FLASH_DISK_OFFSET        → shared FAT (0x660000, 9.6 MB)
+    #   P8_ACTIVE_CART_FLASH_OFFSET → shared scratch (0x620000, 256 KB)
+    # Without these overrides, P8 would try to erase/program inside
+    # its own partition (or another slot's partition) and brick the
+    # chip on first boot.
+    target_compile_definitions(p8run_device PRIVATE
+        THUMBYONE_SLOT_MODE=1
+        FLASH_DISK_OFFSET=0x660000u
+        FLASH_DISK_SIZE=0x9A0000u     # 9.6 MB
+        P8_ACTIVE_CART_FLASH_OFFSET=0x620000u
+    )
+    # Link the ThumbyOne common lib to get the handoff API + slot
+    # IDs (used by p8_relaunch_self to write the P8 slot magic
+    # instead of plain watchdog_reboot).
+    target_link_libraries(p8run_device PRIVATE thumbyone_common)
+    pico_set_uf2_family(p8run_device "absolute")
+    pico_add_extra_outputs(p8run_device)
+else()
+    pico_add_extra_outputs(p8run_device)
+endif()

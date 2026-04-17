@@ -17,6 +17,9 @@
 
 #include "pico/stdlib.h"
 #include "ff.h"
+#ifdef THUMBYONE_SLOT_MODE
+#include "thumbyone_handoff.h"
+#endif
 #include "p8_draw.h"
 #include "p8_font.h"
 #include "p8_machine.h"
@@ -722,7 +725,15 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                 plays_save();
                 pref_save();
                 p8_flash_disk_flush();
+#ifdef THUMBYONE_SLOT_MODE
+                /* In ThumbyOne mode, a plain watchdog reboot lands
+                 * in the lobby — but we want to re-enter P8. Set
+                 * the P8 slot handoff magic and reboot; the lobby
+                 * will chain back to us. */
+                thumbyone_handoff_request_slot(THUMBYONE_SLOT_P8);
+#else
                 watchdog_reboot(0, 0, 0);
+#endif
                 while (1) tight_loop_contents();
             }
         } else {
