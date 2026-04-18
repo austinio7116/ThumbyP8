@@ -292,6 +292,18 @@ static int boot_filesystem(void) {
     /* Otherwise: keep whatever is on the disk. Don't second-guess
      * with label / metadata checks — Windows mutates them. */
 
+#ifdef THUMBYONE_SLOT_MODE
+    /* Under ThumbyOne, the lobby is the ONLY thing allowed to format
+     * the shared FAT. A slot-side auto-format wipes the user's entire
+     * drive (roms + carts + games) whenever f_mount returns a
+     * transient error — a data-loss bug, not "self-recovery". Show
+     * a red splash and ask the user to return to the lobby, where
+     * LB+RB at boot is the documented wipe path. */
+    if (needs_format) {
+        splash(0xf800);   /* red = no usable FS, bounce to lobby */
+        return -1;
+    }
+#else
     if (needs_format) {
         g_boot_reformatted = 1;
 
@@ -322,6 +334,7 @@ static int boot_filesystem(void) {
         f_setlabel("P8THUMBv1");
         p8_flash_disk_flush();
     }
+#endif
 
     f_mkdir("/carts");   /* harmless if already present */
     p8_flash_disk_flush();
