@@ -629,11 +629,21 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
             }
             uint32_t held_ms = ((uint32_t)time_us_64() - menu_hold_start) / 1000;
             if (held_ms > 400) {
-                p8_menu_item_t items[8];
+                p8_menu_item_t items[9];
                 int ni = 0;
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_ACTION, .label = "Resume",
                     .enabled = true, .action_id = P8_MENU_ACT_RESUME };
+
+#ifdef THUMBYONE_SLOT_MODE
+                /* ACT_LOBBY = 7. Keep it well clear of the existing
+                 * RESUME (0) and QUIT (1) so a stale value from a
+                 * partial build of this file can't match. */
+                #define P8_MENU_ACT_LOBBY 7
+                items[ni++] = (p8_menu_item_t){
+                    .kind = P8_MENU_KIND_ACTION, .label = "Back to lobby",
+                    .enabled = true, .action_id = P8_MENU_ACT_LOBBY };
+#endif
                 int show_favs = g_pref.show_favs_only;
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_TOGGLE, .label = "Favs only",
@@ -672,10 +682,27 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                     .min = 0, .max = 100, .enabled = true };
 
                 p8_machine_present(m, scanline);
-                p8_menu_run(scanline,
+                p8_menu_result_t mres = p8_menu_run(scanline,
                             (uint16_t *)(m->mem + 0x8000),
                             "ThumbyP8", "settings",
                             items, ni);
+#ifdef THUMBYONE_SLOT_MODE
+                if (mres.kind == P8_MENU_ACTION && mres.action_id == P8_MENU_ACT_LOBBY) {
+                    /* Fire the handoff after persisting user prefs so
+                     * favs/volume/sort survive the reboot into the
+                     * top-level lobby. */
+                    g_pref.show_favs_only = show_favs;
+                    g_pref.sort_mode = sort_mode;
+                    pref_save();
+                    p8_flash_disk_flush();
+                    f_unmount("");
+                    p8_lcd_wait_idle();
+                    thumbyone_handoff_request_lobby();
+                    /* does not return */
+                }
+#else
+                (void)mres;
+#endif
                 /* Apply any changes to filter / sort and rebuild view. */
                 if (show_favs != g_pref.show_favs_only ||
                     sort_mode != g_pref.sort_mode) {
