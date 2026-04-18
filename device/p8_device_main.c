@@ -18,7 +18,17 @@
 #include "pico/time.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
+#ifndef THUMBYONE_SLOT_MODE
 #include "tusb.h"
+#else
+/* Slot mode: the ThumbyOne lobby owns USB. This slot doesn't
+ * enumerate — tinyUSB isn't linked in — so stub the three entry
+ * points the lobby screen + main loop use so the rest of the file
+ * compiles unchanged. */
+#define tud_task()      do { } while (0)
+#define tud_mounted()   (false)
+#define tusb_init()     do { } while (0)
+#endif
 #include "ff.h"
 
 #include "p8.h"
@@ -840,9 +850,17 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
 
 /* "Drop carts onto USB drive" wait screen. Holds until at least one
  * cart shows up under /carts/. Continues to service USB MSC so the
- * host can actually write the file. */
+ * host can actually write the file. In ThumbyOne slot mode USB is
+ * handled by the lobby; these globals become local stubs that stay
+ * at zero, so the screen shows a static "no USB here" variant and
+ * the user must return to the lobby to transfer files. */
+#ifndef THUMBYONE_SLOT_MODE
 extern volatile int      g_msc_ejected;
 extern volatile uint64_t g_msc_last_op_us;
+#else
+static volatile int      g_msc_ejected    = 0;
+static volatile uint64_t g_msc_last_op_us = 0;
+#endif
 
 /* Home / lobby screen — state machine:
  *

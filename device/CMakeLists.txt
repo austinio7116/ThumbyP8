@@ -140,22 +140,31 @@ endif()
 # ----------------------------------------------------------------------
 # p8run_device: full PICO-8 runtime targeting the LCD + buttons
 # ----------------------------------------------------------------------
-add_executable(p8run_device
+# MSC + tinyUSB are only linked into the standalone build. Under
+# THUMBYONE_SLOT_MODE the lobby owns USB, so p8_msc.c + the
+# descriptors are excluded and the tinyusb link libs dropped.
+set(P8_SRC_BASE
     p8_device_main.c
     p8_lcd_gc9107.c
     p8_buttons.c
     p8_audio_pwm.c
     p8_flash_disk.c
     p8_cart_flash.c
-    p8_msc.c
     p8_picker.c
     p8_log.c
     p8_bmp.c
     p8_menu.c
-    usb_descriptors.c
     fatfs/diskio.c
     ${P8_FATFS_LIB_SRC}
 )
+if (NOT THUMBYONE_SLOT_MODE)
+    list(APPEND P8_SRC_BASE
+        p8_msc.c
+        usb_descriptors.c
+    )
+endif()
+
+add_executable(p8run_device ${P8_SRC_BASE})
 target_include_directories(p8run_device PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${P8_FATFS_LIB_INC}
@@ -169,7 +178,7 @@ target_compile_options(p8run_device PRIVATE -O3 -Wno-unused-parameter)
 # 16 KB gives ~80 nested C call frames, enough for any cart.
 target_compile_definitions(pico_platform INTERFACE PICO_STACK_SIZE=0x4000)
 # Direct TinyUSB integration (no pico_stdio_usb — we own the descriptors).
-target_link_libraries(p8run_device PRIVATE
+set(P8_LINK_BASE
     thumbyp8_runtime
     pico_stdlib
     pico_unique_id
@@ -181,9 +190,11 @@ target_link_libraries(p8run_device PRIVATE
     hardware_irq
     hardware_flash
     hardware_sync
-    tinyusb_device
-    tinyusb_board
 )
+if (NOT THUMBYONE_SLOT_MODE)
+    list(APPEND P8_LINK_BASE tinyusb_device tinyusb_board)
+endif()
+target_link_libraries(p8run_device PRIVATE ${P8_LINK_BASE})
 # Stdio: no USB CDC via pico_stdio_usb (would clash with composite),
 # no UART (no pin). On-screen errors only for now; CDC is exposed
 # through TinyUSB but stdio doesn't auto-route to it yet.
