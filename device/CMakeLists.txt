@@ -123,6 +123,20 @@ target_include_directories(thumbyp8_runtime PUBLIC ${P8_ROOT}/src)
 target_compile_options(thumbyp8_runtime PRIVATE -O3)
 target_link_libraries(thumbyp8_runtime PUBLIC thumbyp8_lua pico_stdlib)
 
+# FatFs library — see identical comment in ThumbyNES CMakeLists.
+# Slot builds share the single copy at ThumbyOne/common/lib/fatfs/;
+# standalone keeps the vendored copy under device/fatfs/.
+if (THUMBYONE_SLOT_MODE)
+    set(P8_FATFS_LIB_SRC ${THUMBYONE_FATFS_SRC})
+    set(P8_FATFS_LIB_INC ${THUMBYONE_FATFS_INCLUDE})
+else()
+    set(P8_FATFS_LIB_SRC
+        fatfs/ff.c
+        fatfs/ffsystem.c
+        fatfs/ffunicode.c)
+    set(P8_FATFS_LIB_INC ${CMAKE_CURRENT_LIST_DIR}/fatfs)
+endif()
+
 # ----------------------------------------------------------------------
 # p8run_device: full PICO-8 runtime targeting the LCD + buttons
 # ----------------------------------------------------------------------
@@ -139,14 +153,12 @@ add_executable(p8run_device
     p8_bmp.c
     p8_menu.c
     usb_descriptors.c
-    fatfs/ff.c
-    fatfs/ffsystem.c
-    fatfs/ffunicode.c
     fatfs/diskio.c
+    ${P8_FATFS_LIB_SRC}
 )
 target_include_directories(p8run_device PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/fatfs
+    ${P8_FATFS_LIB_INC}
 )
 target_compile_options(p8run_device PRIVATE -O3 -Wno-unused-parameter)
 # Bigger stack. PICO_STACK_SIZE defaults to 0x800 (2 KB!) which is
