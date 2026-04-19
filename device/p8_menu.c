@@ -346,10 +346,22 @@ p8_menu_result_t p8_menu_run(uint16_t        *fb,
         case P8_MENU_KIND_TOGGLE:
             if (e_lt || e_rt || e_a) *it->value_ptr = !*it->value_ptr;
             break;
-        case P8_MENU_KIND_SLIDER:
-            if ((e_lt || ar_lt) && *it->value_ptr > it->min) (*it->value_ptr)--;
-            if ((e_rt || ar_rt) && *it->value_ptr < it->max) (*it->value_ptr)++;
+        case P8_MENU_KIND_SLIDER: {
+            /* Auto-step: range / 20 so every slider takes ~20 clicks
+             * end-to-end. Volume 0..30 → step 1; brightness 0..255
+             * → step 12. Matches the lobby's tactile feel. */
+            int step = (it->max - it->min) / 20;
+            if (step < 1) step = 1;
+            if ((e_lt || ar_lt) && *it->value_ptr > it->min) {
+                *it->value_ptr -= step;
+                if (*it->value_ptr < it->min) *it->value_ptr = it->min;
+            }
+            if ((e_rt || ar_rt) && *it->value_ptr < it->max) {
+                *it->value_ptr += step;
+                if (*it->value_ptr > it->max) *it->value_ptr = it->max;
+            }
             break;
+        }
         case P8_MENU_KIND_CHOICE:
             if (e_lt) { if (*it->value_ptr > 0) (*it->value_ptr)--; else *it->value_ptr = it->num_choices - 1; }
             if (e_rt) { if (*it->value_ptr < it->num_choices - 1) (*it->value_ptr)++; else *it->value_ptr = 0; }

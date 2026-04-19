@@ -22,6 +22,9 @@
 
 #ifdef THUMBYONE_SLOT_MODE
 #  include "thumbyone_fs_stats.h"
+#  include "thumbyone_settings.h"
+#  include "thumbyone_backlight.h"
+#  include "p8_flash_disk.h"
 #endif
 #endif
 #include "p8_draw.h"
@@ -633,21 +636,19 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
             }
             uint32_t held_ms = ((uint32_t)time_us_64() - menu_hold_start) / 1000;
             if (held_ms > 400) {
-                p8_menu_item_t items[9];
+                p8_menu_item_t items[11];
                 int ni = 0;
-                items[ni++] = (p8_menu_item_t){
-                    .kind = P8_MENU_KIND_ACTION, .label = "Resume",
-                    .enabled = true, .action_id = P8_MENU_ACT_RESUME };
-
 #ifdef THUMBYONE_SLOT_MODE
                 /* ACT_LOBBY = 7. Keep it well clear of the existing
                  * RESUME (0) and QUIT (1) so a stale value from a
                  * partial build of this file can't match. */
                 #define P8_MENU_ACT_LOBBY 7
-                items[ni++] = (p8_menu_item_t){
-                    .kind = P8_MENU_KIND_ACTION, .label = "Back to lobby",
-                    .enabled = true, .action_id = P8_MENU_ACT_LOBBY };
+                int v_bri = thumbyone_settings_load_brightness();
+                int old_bri = v_bri;
 #endif
+                items[ni++] = (p8_menu_item_t){
+                    .kind = P8_MENU_KIND_ACTION, .label = "Resume",
+                    .enabled = true, .action_id = P8_MENU_ACT_RESUME };
                 int show_favs = g_pref.show_favs_only;
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_TOGGLE, .label = "Favs only",
@@ -665,6 +666,11 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                     .kind = P8_MENU_KIND_SLIDER, .label = "Volume",
                     .value_ptr = volume_ptr, .min = 0, .max = 30,
                     .enabled = true };
+#ifdef THUMBYONE_SLOT_MODE
+                items[ni++] = (p8_menu_item_t){
+                    .kind = P8_MENU_KIND_SLIDER, .label = "Brightness",
+                    .value_ptr = &v_bri, .min = 0, .max = 255, .enabled = true };
+#endif
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_TOGGLE, .label = "Show FPS",
                     .value_ptr = show_fps_ptr, .enabled = true };
@@ -698,6 +704,14 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                     .kind = P8_MENU_KIND_INFO, .label = "Disk",
                     .info_text = disk_text, .value_ptr = &disk_pct,
                     .min = 0, .max = 100, .enabled = true };
+#ifdef THUMBYONE_SLOT_MODE
+                /* Last item — "Back to lobby" — so a single UP from
+                 * the top wraps to it. Matches the NES picker + lobby
+                 * convention. */
+                items[ni++] = (p8_menu_item_t){
+                    .kind = P8_MENU_KIND_ACTION, .label = "Back to lobby",
+                    .enabled = true, .action_id = P8_MENU_ACT_LOBBY };
+#endif
 
                 p8_machine_present(m, scanline);
                 p8_menu_result_t mres = p8_menu_run(scanline,
@@ -705,6 +719,15 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                             "ThumbyP8", "settings",
                             items, ni);
 #ifdef THUMBYONE_SLOT_MODE
+                /* Persist brightness if it changed — before the lobby
+                 * handoff so the /.brightness reboot-survives. */
+                if (v_bri != old_bri) {
+                    if (v_bri < 0)   v_bri = 0;
+                    if (v_bri > 255) v_bri = 255;
+                    thumbyone_settings_save_brightness((uint8_t)v_bri);
+                    p8_flash_disk_flush();
+                    thumbyone_backlight_set((uint8_t)v_bri);
+                }
                 if (mres.kind == P8_MENU_ACTION && mres.action_id == P8_MENU_ACT_LOBBY) {
                     /* Fire the handoff after persisting user prefs so
                      * favs/volume/sort survive the reboot into the

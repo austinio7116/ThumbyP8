@@ -218,6 +218,10 @@ if (THUMBYONE_SLOT_MODE)
         FLASH_DISK_OFFSET=0x660000u
         FLASH_DISK_SIZE=0x9A0000u     # 9.6 MB
         P8_ACTIVE_CART_FLASH_OFFSET=0x620000u
+        # Scratch shrinks by one 4 KB sector so the cross-slot
+        # settings mirror can live at the tail end (0x65F000).
+        # See ThumbyOne/common/slot_layout.h.
+        P8_ACTIVE_CART_FLASH_SIZE=0x3F000u   # 252 KB
     )
     # Compile ThumbyOne's handoff source into this target directly
     # (common is not a CMake library — see common/CMakeLists.txt).

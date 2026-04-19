@@ -225,6 +225,7 @@ typedef struct {
 
 #ifdef THUMBYONE_SLOT_MODE
 #  include "thumbyone_settings.h"
+#  include "thumbyone_backlight.h"
 #endif
 
 static void settings_load(void) {
@@ -1682,6 +1683,14 @@ int main(void) {
                         .value_ptr = &master_volume,
                         .min = VOL_MIN, .max = VOL_MAX, .enabled = true };
 
+#ifdef THUMBYONE_SLOT_MODE
+                    int v_bri = thumbyone_settings_load_brightness();
+                    int old_bri = v_bri;
+                    items[ni++] = (p8_menu_item_t){
+                        .kind = P8_MENU_KIND_SLIDER, .label = "Brightness",
+                        .value_ptr = &v_bri, .min = 0, .max = 255, .enabled = true };
+#endif
+
                     items[ni++] = (p8_menu_item_t){
                         .kind = P8_MENU_KIND_TOGGLE, .label = "Show FPS",
                         .value_ptr = &show_fps_toggle, .enabled = true };
@@ -1754,6 +1763,17 @@ int main(void) {
                     }
                     /* Save settings in case volume/FPS changed. */
                     settings_save();
+#ifdef THUMBYONE_SLOT_MODE
+                    /* Persist brightness to shared /.brightness if
+                     * moved, and apply live. */
+                    if (v_bri != old_bri) {
+                        if (v_bri < 0)   v_bri = 0;
+                        if (v_bri > 255) v_bri = 255;
+                        thumbyone_settings_save_brightness((uint8_t)v_bri);
+                        p8_flash_disk_flush();
+                        thumbyone_backlight_set((uint8_t)v_bri);
+                    }
+#endif
                     /* Resume — reset frame timer so the game doesn't
                      * fast-forward to catch up with elapsed real time. */
                     while (p8_buttons_menu_pressed()) sleep_ms(10);
