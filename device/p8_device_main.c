@@ -223,7 +223,20 @@ typedef struct {
     uint8_t  _pad;
 } p8_settings_t;
 
+#ifdef THUMBYONE_SLOT_MODE
+#  include "thumbyone_settings.h"
+#endif
+
 static void settings_load(void) {
+#ifdef THUMBYONE_SLOT_MODE
+    /* Unified ThumbyOne volume: 0..20 user-facing, scale to P8's
+     * internal 0..30 (VOL_MAX) range. Set once in the lobby,
+     * applies here too. /settings.dat is still consulted for the
+     * show_fps toggle which is P8-specific. */
+    int ui = thumbyone_settings_load_volume();
+    master_volume = (ui * VOL_MAX) / THUMBYONE_VOLUME_MAX;
+#endif
+
     FIL f;
     if (f_open(&f, SETTINGS_PATH, FA_READ) != FR_OK) return;
     p8_settings_t s;
@@ -233,11 +246,22 @@ static void settings_load(void) {
     if (br < sizeof(s)) return;
     if (s.magic[0] != 'P' || s.magic[1] != '8' ||
         s.magic[2] != 'S' || s.magic[3] != 0) return;
+#ifndef THUMBYONE_SLOT_MODE
+    /* Standalone: volume comes from /settings.dat as before. In
+     * slot mode we've already loaded it from /.volume above. */
     if (s.volume <= VOL_MAX) master_volume = s.volume;
+#endif
     show_fps_toggle = s.show_fps ? 1 : 0;
 }
 
 static void settings_save(void) {
+#ifdef THUMBYONE_SLOT_MODE
+    /* P8 internal (0..30) -> unified 0..20 and persist so lobby/
+     * NES/MPY next-boot see it. */
+    int ui = (master_volume * THUMBYONE_VOLUME_MAX + VOL_MAX / 2) / VOL_MAX;
+    if (ui < 0) ui = 0; if (ui > THUMBYONE_VOLUME_MAX) ui = THUMBYONE_VOLUME_MAX;
+    thumbyone_settings_save_volume((uint8_t)ui);
+#endif
     p8_settings_t s = {
         .magic = {'P', '8', 'S', 0},
         .version = 1,
@@ -1140,8 +1164,20 @@ int main(void) {
      * USB host gets a chance to see the disk. */
     p8_flash_disk_flush();
 
-    /* Load persistent settings (volume, FPS toggle). */
+    /* Load persistent settings (volume, FPS toggle, and — under
+     * ThumbyOne slot mode — the shared /.volume byte). */
     settings_load();
+
+#ifdef THUMBYONE_SLOT_MODE
+    /* Apply the ThumbyOne system-wide brightness from /.brightness.
+     * P8 LCD init drove the backlight at full; this takes it to
+     * the user's preferred level. */
+    {
+        extern uint8_t thumbyone_settings_load_brightness(void);
+        extern void thumbyone_backlight_set(uint8_t);
+        thumbyone_backlight_set(thumbyone_settings_load_brightness());
+    }
+#endif
 
     /* Always log a boot marker so the user has *something* in
      * /thumbyp8.log even when no cart errors fire. Helpful for

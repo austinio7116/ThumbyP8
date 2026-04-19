@@ -12,6 +12,14 @@
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
 
+#ifdef THUMBYONE_SLOT_MODE
+/* Shared hardware-PWM backlight driver (GP7, slice 3 channel B)
+ * + /.brightness reader. Standalone ThumbyP8 keeps the simple
+ * gpio_put pattern. */
+#  include "thumbyone_backlight.h"
+#  include "thumbyone_settings.h"
+#endif
+
 #define LCD_SPI            spi0
 #define LCD_SPI_HZ         (80 * 1000 * 1000)
 
@@ -67,8 +75,12 @@ void p8_lcd_init(void) {
     gpio_init(PIN_DC);  gpio_set_dir(PIN_DC,  GPIO_OUT); gpio_put(PIN_DC,  1);
     gpio_init(PIN_RST); gpio_set_dir(PIN_RST, GPIO_OUT); gpio_put(PIN_RST, 1);
 
-    /* Backlight: drive high for full brightness. PWM later. */
+    /* Backlight off during panel init. */
+#ifdef THUMBYONE_SLOT_MODE
+    thumbyone_backlight_init();
+#else
     gpio_init(PIN_BL);  gpio_set_dir(PIN_BL,  GPIO_OUT); gpio_put(PIN_BL,  0);
+#endif
 
     /* Hardware reset pulse */
     sleep_ms(5);
@@ -125,8 +137,15 @@ void p8_lcd_init(void) {
     channel_config_set_transfer_data_size(&dma_cfg, DMA_SIZE_16);
     channel_config_set_dreq(&dma_cfg, DREQ_SPI0_TX);
 
-    /* Backlight on */
+    /* Backlight on — honour /.brightness if the FAT is mounted,
+     * else DEFAULT (full). thumbyone_settings_load_brightness
+     * returns DEFAULT cleanly if the file is unreadable so this
+     * is safe whether or not the FAT is up yet. */
+#ifdef THUMBYONE_SLOT_MODE
+    thumbyone_backlight_set(thumbyone_settings_load_brightness());
+#else
     gpio_put(PIN_BL, 1);
+#endif
 }
 
 void p8_lcd_wait_idle(void) {

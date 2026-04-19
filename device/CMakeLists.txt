@@ -191,6 +191,8 @@ set(P8_LINK_BASE
     hardware_flash
     hardware_sync
     hardware_adc   # shared thumbyone_battery (battery voltage + charge state)
+    hardware_pio   # shared thumbyone_backlight (PIO PWM on GP7 to
+                    # dodge the GP7/GP23 slice-3 aliasing with audio)
 )
 if (NOT THUMBYONE_SLOT_MODE)
     list(APPEND P8_LINK_BASE tinyusb_device tinyusb_board)
@@ -222,11 +224,15 @@ if (THUMBYONE_SLOT_MODE)
     target_sources(p8run_device PRIVATE
         ${THUMBYONE_COMMON_SRC}
         ${THUMBYONE_COMMON_BATTERY_SRC}
-        ${THUMBYONE_COMMON_FS_STATS_SRC})
+        ${THUMBYONE_COMMON_FS_STATS_SRC}
+        ${THUMBYONE_COMMON_BACKLIGHT_SRC}
+        ${THUMBYONE_COMMON_SETTINGS_SRC})
     target_include_directories(p8run_device PRIVATE
         ${THUMBYONE_COMMON_INCLUDE}
         ${THUMBYONE_COMMON_BATTERY_INCLUDE}
-        ${THUMBYONE_COMMON_FS_STATS_INCLUDE})
+        ${THUMBYONE_COMMON_FS_STATS_INCLUDE}
+        ${THUMBYONE_COMMON_BACKLIGHT_INCLUDE}
+        ${THUMBYONE_COMMON_SETTINGS_INCLUDE})
     pico_set_uf2_family(p8run_device "absolute")
     pico_add_extra_outputs(p8run_device)
 else()
