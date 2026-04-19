@@ -221,10 +221,12 @@ if (THUMBYONE_SLOT_MODE)
     # (common is not a CMake library — see common/CMakeLists.txt).
     target_sources(p8run_device PRIVATE
         ${THUMBYONE_COMMON_SRC}
-        ${THUMBYONE_COMMON_BATTERY_SRC})
+        ${THUMBYONE_COMMON_BATTERY_SRC}
+        ${THUMBYONE_COMMON_FS_STATS_SRC})
     target_include_directories(p8run_device PRIVATE
         ${THUMBYONE_COMMON_INCLUDE}
-        ${THUMBYONE_COMMON_BATTERY_INCLUDE})
+        ${THUMBYONE_COMMON_BATTERY_INCLUDE}
+        ${THUMBYONE_COMMON_FS_STATS_INCLUDE})
     pico_set_uf2_family(p8run_device "absolute")
     pico_add_extra_outputs(p8run_device)
 else()

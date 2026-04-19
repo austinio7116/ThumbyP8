@@ -19,6 +19,10 @@
 #include "ff.h"
 #ifdef THUMBYONE_SLOT_MODE
 #include "thumbyone_handoff.h"
+
+#ifdef THUMBYONE_SLOT_MODE
+#  include "thumbyone_fs_stats.h"
+#endif
 #endif
 #include "p8_draw.h"
 #include "p8_font.h"
@@ -667,6 +671,19 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                 static int disk_pct = 0;
                 static char disk_text[24];
                 {
+#ifdef THUMBYONE_SLOT_MODE
+                    /* Shared helper — matches lobby / NES / MPY formatting
+                     * (compact "X.XM/Y.YM", bar fills with used). */
+                    uint64_t used_b = 0, total_b = 0;
+                    thumbyone_fs_get_usage(&used_b, NULL, &total_b);
+                    thumbyone_fs_fmt_used_total(used_b, total_b,
+                                                disk_text, sizeof(disk_text));
+                    disk_pct = total_b > 0 ?
+                                (int)((used_b * 100) / total_b) : 0;
+#else
+                    /* Standalone P8 build: raw sector numbers. This was
+                     * always confusing ("%dK" for 512-byte sectors) but
+                     * kept as-is so standalone output doesn't regress. */
                     DWORD free_clust = 0; FATFS *fsp = NULL;
                     if (f_getfree("", &free_clust, &fsp) == FR_OK && fsp) {
                         DWORD total = (fsp->n_fatent - 2) * fsp->csize;
@@ -675,6 +692,7 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                         snprintf(disk_text, sizeof(disk_text), "%dK/%dK",
                                  (int)(used/2), (int)(total/2));
                     }
+#endif
                 }
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_INFO, .label = "Disk",
