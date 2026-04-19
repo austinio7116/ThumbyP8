@@ -190,6 +190,7 @@ set(P8_LINK_BASE
     hardware_irq
     hardware_flash
     hardware_sync
+    hardware_adc   # shared thumbyone_battery (battery voltage + charge state)
 )
 if (NOT THUMBYONE_SLOT_MODE)
     list(APPEND P8_LINK_BASE tinyusb_device tinyusb_board)
@@ -218,8 +219,12 @@ if (THUMBYONE_SLOT_MODE)
     )
     # Compile ThumbyOne's handoff source into this target directly
     # (common is not a CMake library — see common/CMakeLists.txt).
-    target_sources(p8run_device PRIVATE ${THUMBYONE_COMMON_SRC})
-    target_include_directories(p8run_device PRIVATE ${THUMBYONE_COMMON_INCLUDE})
+    target_sources(p8run_device PRIVATE
+        ${THUMBYONE_COMMON_SRC}
+        ${THUMBYONE_COMMON_BATTERY_SRC})
+    target_include_directories(p8run_device PRIVATE
+        ${THUMBYONE_COMMON_INCLUDE}
+        ${THUMBYONE_COMMON_BATTERY_INCLUDE})
     pico_set_uf2_family(p8run_device "absolute")
     pico_add_extra_outputs(p8run_device)
 else()
