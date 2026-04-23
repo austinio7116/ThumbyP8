@@ -36,6 +36,12 @@ typedef struct {
     int               action_id;       /* ACTION — returned to caller */
     const char       *suffix;          /* optional trailing hint */
     const char       *info_text;       /* INFO — value column text */
+    /* Optional live-change callback for SLIDER / TOGGLE / CHOICE.
+     * Fired every time *value_ptr is mutated by a LEFT/RIGHT press
+     * so the caller can apply the new value immediately (backlight,
+     * LED, volume etc.) instead of waiting for the menu to close.
+     * NULL = commit-only, pre-callback behaviour. */
+    void            (*on_change)(void);
 } p8_menu_item_t;
 
 typedef enum {

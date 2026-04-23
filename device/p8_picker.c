@@ -26,6 +26,19 @@
 #  include "thumbyone_backlight.h"
 #  include "thumbyone_led.h"
 #  include "p8_flash_disk.h"
+
+/* Live-apply plumbing for the Brightness slider in the picker menu.
+ * Backlight + LED push on every step; flash commit still waits for
+ * menu close so we don't thrash /.brightness. */
+static int *s_live_bri_ptr;
+static void live_brightness_apply(void) {
+    if (!s_live_bri_ptr) return;
+    int v = *s_live_bri_ptr;
+    if (v < 0)   v = 0;
+    if (v > 255) v = 255;
+    thumbyone_backlight_set((uint8_t)v);
+    thumbyone_led_refresh();
+}
 #endif
 #endif
 #include "p8_draw.h"
@@ -668,9 +681,11 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                     .value_ptr = volume_ptr, .min = 0, .max = 30,
                     .enabled = true };
 #ifdef THUMBYONE_SLOT_MODE
+                s_live_bri_ptr = &v_bri;
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_SLIDER, .label = "Brightness",
-                    .value_ptr = &v_bri, .min = 0, .max = 255, .enabled = true };
+                    .value_ptr = &v_bri, .min = 0, .max = 255, .enabled = true,
+                    .on_change = live_brightness_apply };
 #endif
                 items[ni++] = (p8_menu_item_t){
                     .kind = P8_MENU_KIND_TOGGLE, .label = "Show FPS",
@@ -720,17 +735,17 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                             "ThumbyP8", "settings",
                             items, ni);
 #ifdef THUMBYONE_SLOT_MODE
+                /* Live callback no longer valid once the menu closes. */
+                s_live_bri_ptr = NULL;
                 /* Persist brightness if it changed — before the lobby
-                 * handoff so the /.brightness reboot-survives. After
-                 * the backlight set, re-paint the front LED so it
-                 * tracks the slider. */
+                 * handoff so the /.brightness reboot-survives. The
+                 * backlight + LED were already applied live via
+                 * on_change; only the flash commit happens here. */
                 if (v_bri != old_bri) {
                     if (v_bri < 0)   v_bri = 0;
                     if (v_bri > 255) v_bri = 255;
                     thumbyone_settings_save_brightness((uint8_t)v_bri);
                     p8_flash_disk_flush();
-                    thumbyone_backlight_set((uint8_t)v_bri);
-                    thumbyone_led_refresh();
                 }
                 if (mres.kind == P8_MENU_ACTION && mres.action_id == P8_MENU_ACT_LOBBY) {
                     /* Fire the handoff after persisting user prefs so

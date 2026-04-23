@@ -344,7 +344,10 @@ p8_menu_result_t p8_menu_run(uint16_t        *fb,
 
         if (it->enabled) switch (it->kind) {
         case P8_MENU_KIND_TOGGLE:
-            if (e_lt || e_rt || e_a) *it->value_ptr = !*it->value_ptr;
+            if (e_lt || e_rt || e_a) {
+                *it->value_ptr = !*it->value_ptr;
+                if (it->on_change) it->on_change();
+            }
             break;
         case P8_MENU_KIND_SLIDER: {
             /* Auto-step: range / 20 so every slider takes ~20 clicks
@@ -352,19 +355,31 @@ p8_menu_result_t p8_menu_run(uint16_t        *fb,
              * → step 12. Matches the lobby's tactile feel. */
             int step = (it->max - it->min) / 20;
             if (step < 1) step = 1;
+            bool moved = false;
             if ((e_lt || ar_lt) && *it->value_ptr > it->min) {
                 *it->value_ptr -= step;
                 if (*it->value_ptr < it->min) *it->value_ptr = it->min;
+                moved = true;
             }
             if ((e_rt || ar_rt) && *it->value_ptr < it->max) {
                 *it->value_ptr += step;
                 if (*it->value_ptr > it->max) *it->value_ptr = it->max;
+                moved = true;
             }
+            if (moved && it->on_change) it->on_change();
             break;
         }
         case P8_MENU_KIND_CHOICE:
-            if (e_lt) { if (*it->value_ptr > 0) (*it->value_ptr)--; else *it->value_ptr = it->num_choices - 1; }
-            if (e_rt) { if (*it->value_ptr < it->num_choices - 1) (*it->value_ptr)++; else *it->value_ptr = 0; }
+            if (e_lt) {
+                if (*it->value_ptr > 0) (*it->value_ptr)--;
+                else                    *it->value_ptr = it->num_choices - 1;
+                if (it->on_change) it->on_change();
+            }
+            if (e_rt) {
+                if (*it->value_ptr < it->num_choices - 1) (*it->value_ptr)++;
+                else                                       *it->value_ptr = 0;
+                if (it->on_change) it->on_change();
+            }
             break;
         case P8_MENU_KIND_ACTION:
             if (e_a) {

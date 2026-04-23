@@ -227,6 +227,17 @@ typedef struct {
 #  include "thumbyone_settings.h"
 #  include "thumbyone_backlight.h"
 #  include "thumbyone_led.h"
+
+/* Live-apply plumbing for the in-game Brightness slider. */
+static int *s_live_bri_ptr;
+static void live_brightness_apply(void) {
+    if (!s_live_bri_ptr) return;
+    int v = *s_live_bri_ptr;
+    if (v < 0)   v = 0;
+    if (v > 255) v = 255;
+    thumbyone_backlight_set((uint8_t)v);
+    thumbyone_led_refresh();
+}
 #endif
 
 static void settings_load(void) {
@@ -1242,18 +1253,12 @@ int main(void) {
     settings_load();
 
 #ifdef THUMBYONE_SLOT_MODE
-    /* Apply the ThumbyOne system-wide brightness from /.brightness.
-     * P8 LCD init drove the backlight at full; this takes it to
-     * the user's preferred level. Also paint the front LED (green =
-     * idle / in picker, matching the lobby and MPY picker) via the
-     * shared thumbyone_led module so it's scaled by the slider. */
-    {
-        extern uint8_t thumbyone_settings_load_brightness(void);
-        extern void thumbyone_backlight_set(uint8_t);
-        thumbyone_backlight_set(thumbyone_settings_load_brightness());
-        thumbyone_led_init();
-        thumbyone_led_set_rgb(0, 255, 0);
-    }
+    /* One-shot slot init: loads /.brightness, drives the backlight
+     * PWM to that value, paints the front LED idle green at the
+     * same scale. See thumbyone_led.h — replaces the per-slot
+     * open-coding of load+set+init+paint so every slot honours the
+     * saved brightness on boot through one code path. */
+    thumbyone_slot_init_brightness_and_led(true);
 #endif
 
     /* Always log a boot marker so the user has *something* in
@@ -1762,9 +1767,11 @@ int main(void) {
 #ifdef THUMBYONE_SLOT_MODE
                     int v_bri = thumbyone_settings_load_brightness();
                     int old_bri = v_bri;
+                    s_live_bri_ptr = &v_bri;
                     items[ni++] = (p8_menu_item_t){
                         .kind = P8_MENU_KIND_SLIDER, .label = "Brightness",
-                        .value_ptr = &v_bri, .min = 0, .max = 255, .enabled = true };
+                        .value_ptr = &v_bri, .min = 0, .max = 255, .enabled = true,
+                        .on_change = live_brightness_apply };
 #endif
 
                     items[ni++] = (p8_menu_item_t){
@@ -1840,17 +1847,16 @@ int main(void) {
                     /* Save settings in case volume/FPS changed. */
                     settings_save();
 #ifdef THUMBYONE_SLOT_MODE
-                    /* Persist brightness to shared /.brightness if
-                     * moved, and apply live. Refresh the front LED
-                     * at the new slider value so it tracks the
-                     * screen dim/brighten. */
+                    /* Live callback no longer valid once the menu closes. */
+                    s_live_bri_ptr = NULL;
+                    /* Persist brightness if it moved. Backlight + LED
+                     * were already applied live via on_change; only
+                     * the flash commit happens here. */
                     if (v_bri != old_bri) {
                         if (v_bri < 0)   v_bri = 0;
                         if (v_bri > 255) v_bri = 255;
                         thumbyone_settings_save_brightness((uint8_t)v_bri);
                         p8_flash_disk_flush();
-                        thumbyone_backlight_set((uint8_t)v_bri);
-                        thumbyone_led_refresh();
                     }
 #endif
                     /* Resume — reset frame timer so the game doesn't
