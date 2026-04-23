@@ -226,6 +226,7 @@ typedef struct {
 #ifdef THUMBYONE_SLOT_MODE
 #  include "thumbyone_settings.h"
 #  include "thumbyone_backlight.h"
+#  include "thumbyone_led.h"
 #endif
 
 static void settings_load(void) {
@@ -818,6 +819,28 @@ static void invalidate_luac_cache_if_stale(void) {
     p8_flash_disk_flush();
 }
 
+/* Minimum free space (bytes) required before we'll start a cart
+ * conversion. A single cart produces .luac (~30–80 KB) + .rom
+ * (32 KB) + .bmp (~33 KB) + .meta + .claims, so call it ~150 KB
+ * worst case; reserving 256 KB leaves headroom for a second cart
+ * plus the few-KB FatFs bookkeeping overhead. If the disk is
+ * anywhere near this threshold, running a full convert will just
+ * hit "ERR: dump fail" partway through f_write and erase any
+ * partial .luac — wasted boot time, and the cart still isn't
+ * playable. Bail early instead and show a clear warning. */
+#define P8_CONVERT_MIN_FREE_BYTES  (256u * 1024u)
+
+/* Compute free space on the shared FAT, in bytes. Returns 0 on
+ * f_getfree error (treated as "disk unhealthy — don't attempt
+ * conversion"). */
+static uint64_t shared_fat_free_bytes(void) {
+    FATFS *fs = NULL;
+    DWORD free_clust = 0;
+    if (f_getfree("/", &free_clust, &fs) != FR_OK || fs == NULL) return 0;
+    uint64_t sector_size = FF_MIN_SS;  /* 512 on our config */
+    return (uint64_t)free_clust * fs->csize * sector_size;
+}
+
 /* Scan /carts/ for .p8.png files without matching .luac and convert. */
 static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
     DIR dir;
@@ -856,6 +879,55 @@ static int convert_pending_carts(p8_machine *m, uint16_t *sl) {
     f_closedir(&dir);
 
     if (!found) return 0;
+
+    /* Disk-full guard: the conversion pipeline writes ~150 KB per
+     * cart (luac + rom + bmp + meta + claims). If the disk is near
+     * full we'd get most of the way through, hit "ERR: dump fail"
+     * on the final luac write, and erase the partial file. Worse:
+     * the empty-stub fallback at the bottom of this function also
+     * relies on a f_open(FA_CREATE_ALWAYS), which itself can fail
+     * on a full disk — so the cart gets retried every boot, burning
+     * seconds of startup each time.
+     *
+     * Bail before conversion starts if the shared FAT doesn't have
+     * comfortable headroom. Show a banner for a few seconds so the
+     * user knows WHY nothing is happening (and what to do — free up
+     * space via USB, then reboot). Existing .luac files are
+     * untouched, so already-converted carts still launch normally.
+     *
+     * We skip ALL pending carts this boot (return 0 without trying
+     * any), not just this one — otherwise a disk with 20 unconverted
+     * carts shows the banner 20 times across 20 reboots. */
+    uint64_t free_bytes = shared_fat_free_bytes();
+    if (free_bytes < P8_CONVERT_MIN_FREE_BYTES) {
+        p8_machine_reset(m);
+        {
+            char buf[64];
+            snprintf(buf, sizeof(buf),
+                     "convert: DISK FULL, skipping %s (free=%uK)",
+                     stem, (unsigned)(free_bytes / 1024u));
+            p8_log_to_file(buf);
+        }
+        /* screen_log appends lines top-to-bottom; use explicit lines
+         * so the message is clear regardless of prior content. */
+        screen_log(m, sl, "DISK FULL");
+        screen_log(m, sl, "");
+        {
+            char line[40];
+            snprintf(line, sizeof(line), "free: %uK",
+                     (unsigned)(free_bytes / 1024u));
+            screen_log(m, sl, line);
+            snprintf(line, sizeof(line), "need: %uK",
+                     (unsigned)(P8_CONVERT_MIN_FREE_BYTES / 1024u));
+            screen_log(m, sl, line);
+        }
+        screen_log(m, sl, "");
+        screen_log(m, sl, "new carts paused");
+        screen_log(m, sl, "delete old carts");
+        screen_log(m, sl, "via USB to resume");
+        sleep_ms(4000);
+        return 0;
+    }
 
     /* Initialize machine ONCE before conversion starts. screen_log
      * doesn't call p8_machine_reset (to preserve thumbnail in
@@ -1172,11 +1244,15 @@ int main(void) {
 #ifdef THUMBYONE_SLOT_MODE
     /* Apply the ThumbyOne system-wide brightness from /.brightness.
      * P8 LCD init drove the backlight at full; this takes it to
-     * the user's preferred level. */
+     * the user's preferred level. Also paint the front LED (green =
+     * idle / in picker, matching the lobby and MPY picker) via the
+     * shared thumbyone_led module so it's scaled by the slider. */
     {
         extern uint8_t thumbyone_settings_load_brightness(void);
         extern void thumbyone_backlight_set(uint8_t);
         thumbyone_backlight_set(thumbyone_settings_load_brightness());
+        thumbyone_led_init();
+        thumbyone_led_set_rgb(0, 255, 0);
     }
 #endif
 
@@ -1765,13 +1841,16 @@ int main(void) {
                     settings_save();
 #ifdef THUMBYONE_SLOT_MODE
                     /* Persist brightness to shared /.brightness if
-                     * moved, and apply live. */
+                     * moved, and apply live. Refresh the front LED
+                     * at the new slider value so it tracks the
+                     * screen dim/brighten. */
                     if (v_bri != old_bri) {
                         if (v_bri < 0)   v_bri = 0;
                         if (v_bri > 255) v_bri = 255;
                         thumbyone_settings_save_brightness((uint8_t)v_bri);
                         p8_flash_disk_flush();
                         thumbyone_backlight_set((uint8_t)v_bri);
+                        thumbyone_led_refresh();
                     }
 #endif
                     /* Resume — reset frame timer so the game doesn't

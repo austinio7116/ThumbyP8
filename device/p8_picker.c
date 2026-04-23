@@ -24,6 +24,7 @@
 #  include "thumbyone_fs_stats.h"
 #  include "thumbyone_settings.h"
 #  include "thumbyone_backlight.h"
+#  include "thumbyone_led.h"
 #  include "p8_flash_disk.h"
 #endif
 #endif
@@ -720,13 +721,16 @@ int p8_picker_run(p8_machine *m, p8_input *in, uint16_t *scanline,
                             items, ni);
 #ifdef THUMBYONE_SLOT_MODE
                 /* Persist brightness if it changed — before the lobby
-                 * handoff so the /.brightness reboot-survives. */
+                 * handoff so the /.brightness reboot-survives. After
+                 * the backlight set, re-paint the front LED so it
+                 * tracks the slider. */
                 if (v_bri != old_bri) {
                     if (v_bri < 0)   v_bri = 0;
                     if (v_bri > 255) v_bri = 255;
                     thumbyone_settings_save_brightness((uint8_t)v_bri);
                     p8_flash_disk_flush();
                     thumbyone_backlight_set((uint8_t)v_bri);
+                    thumbyone_led_refresh();
                 }
                 if (mres.kind == P8_MENU_ACTION && mres.action_id == P8_MENU_ACT_LOBBY) {
                     /* Fire the handoff after persisting user prefs so
