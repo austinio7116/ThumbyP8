@@ -205,24 +205,33 @@ pico_enable_stdio_usb(p8run_device 0)
 pico_enable_stdio_uart(p8run_device 0)
 
 if (THUMBYONE_SLOT_MODE)
-    # Embedded in ThumbyOne's P8 partition (512 KB at flash offset
-    # 0x120000). See ThumbyOne/common/slot_layout.h for the
-    # canonical values; keep these in sync.
-    #   FLASH_DISK_OFFSET        → shared FAT (0x660000, 9.6 MB)
-    #   P8_ACTIVE_CART_FLASH_OFFSET → shared scratch (0x620000, 256 KB)
+    # Embedded in ThumbyOne's P8 partition. See ThumbyOne/common/
+    # slot_layout.h for the canonical values; keep these in sync.
+    # Partition offset shifts +1 MB when THUMBYONE_WITH_MD=ON because
+    # the NES partition grew from 1 MB to 2 MB to hold PicoDrive.
+    #   FLASH_DISK_OFFSET        → shared FAT
+    #   P8_ACTIVE_CART_FLASH_OFFSET → shared scratch
     # Without these overrides, P8 would try to erase/program inside
     # its own partition (or another slot's partition) and brick the
     # chip on first boot.
-    target_compile_definitions(p8run_device PRIVATE
-        THUMBYONE_SLOT_MODE=1
-        FLASH_DISK_OFFSET=0x660000u
-        FLASH_DISK_SIZE=0x9A0000u     # 9.6 MB
-        P8_ACTIVE_CART_FLASH_OFFSET=0x620000u
-        # Scratch shrinks by one 4 KB sector so the cross-slot
-        # settings mirror can live at the tail end (0x65F000).
-        # See ThumbyOne/common/slot_layout.h.
-        P8_ACTIVE_CART_FLASH_SIZE=0x3F000u   # 252 KB
-    )
+    if (THUMBYONE_WITH_MD)
+        target_compile_definitions(p8run_device PRIVATE
+            THUMBYONE_SLOT_MODE=1
+            THUMBYONE_WITH_MD=1
+            FLASH_DISK_OFFSET=0x760000u
+            FLASH_DISK_SIZE=0x8A0000u     # 8.6 MB
+            P8_ACTIVE_CART_FLASH_OFFSET=0x720000u
+            P8_ACTIVE_CART_FLASH_SIZE=0x3F000u   # 252 KB
+        )
+    else()
+        target_compile_definitions(p8run_device PRIVATE
+            THUMBYONE_SLOT_MODE=1
+            FLASH_DISK_OFFSET=0x660000u
+            FLASH_DISK_SIZE=0x9A0000u     # 9.6 MB
+            P8_ACTIVE_CART_FLASH_OFFSET=0x620000u
+            P8_ACTIVE_CART_FLASH_SIZE=0x3F000u   # 252 KB
+        )
+    endif()
     # Compile ThumbyOne's handoff source into this target directly
     # (common is not a CMake library — see common/CMakeLists.txt).
     target_sources(p8run_device PRIVATE
@@ -230,12 +239,14 @@ if (THUMBYONE_SLOT_MODE)
         ${THUMBYONE_COMMON_BATTERY_SRC}
         ${THUMBYONE_COMMON_FS_STATS_SRC}
         ${THUMBYONE_COMMON_BACKLIGHT_SRC}
+        ${THUMBYONE_COMMON_LED_SRC}
         ${THUMBYONE_COMMON_SETTINGS_SRC})
     target_include_directories(p8run_device PRIVATE
         ${THUMBYONE_COMMON_INCLUDE}
         ${THUMBYONE_COMMON_BATTERY_INCLUDE}
         ${THUMBYONE_COMMON_FS_STATS_INCLUDE}
         ${THUMBYONE_COMMON_BACKLIGHT_INCLUDE}
+        ${THUMBYONE_COMMON_LED_INCLUDE}
         ${THUMBYONE_COMMON_SETTINGS_INCLUDE})
     pico_set_uf2_family(p8run_device "absolute")
     pico_add_extra_outputs(p8run_device)
