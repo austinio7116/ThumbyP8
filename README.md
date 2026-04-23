@@ -1,5 +1,9 @@
 # ThumbyP8
 
+> 🕹️ **ThumbyP8 is now part of [ThumbyOne](https://github.com/austinio7116/ThumbyOne)** — a unified multi-boot firmware that ships ThumbyP8, ThumbyNES (NES / SMS / GG / GB), ThumbyDOOM, and MicroPython + Tiny Game Engine in a single UF2 with one shared USB drive for carts, ROMs, and Python games. Most users should flash ThumbyOne instead of the standalone ThumbyP8 firmware below.
+>
+> This repo remains the standalone build of ThumbyP8 and the source of truth for the runtime itself — the code here is what ThumbyOne's P8 slot compiles. Use this repo if you specifically want PICO-8-only firmware, or to hack on the runtime code.
+
 A PICO-8-compatible fantasy console runtime for the **TinyCircuits Thumby Color** (RP2350 Cortex-M33, 128×128 RGB565 LCD, 4-channel audio, 520 KB SRAM, 16 MB flash).
 
 Drop `.p8.png` cart files onto the USB drive — they are automatically converted and ready to play on next boot. No host tools required.
